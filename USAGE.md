@@ -24,11 +24,11 @@ development headers: `libxcb`, `libxkbcommon`, `libwayland-client`.
 ## Checking your session
 
 ```bash
-unburn --check          # which overlay backends this session supports
-unburn --list-displays  # monitors as unburn sees them
+unburn check          # which overlay backends this session supports
+unburn list-displays  # monitors as unburn sees them
 ```
 
-`--check` reports one of three levels per backend:
+`check` reports one of three levels per backend:
 
 - **Full** — the overlay is guaranteed to sit above everything and take no
   input. On Wayland this needs `wlr-layer-shell-v1` (wlroots, Sway, Hyprland,
@@ -117,24 +117,21 @@ zero and the overlay is exactly black-with-alpha again.
 ## Running in the background
 
 ```bash
-unburn --no-gui                     # overlays only, no calibration window
-unburn --no-gui --profile bedroom   # a named profile
+unburn start                     # overlays only, no calibration window
+unburn start --profile bedroom   # a named profile
 ```
 
 Tick **Start automatically on login** in the window, or run
-`unburn --no-gui` from your compositor's autostart. A single instance holds a
+`unburn start` from your compositor's autostart. A single instance holds a
 control socket; further invocations talk to it instead of starting a second
 copy:
 
 ```bash
-unburn --bypass    # flip compensation off/on, good for a hotkey
-unburn --disable   # remove every overlay
-unburn --enable    # put them back
-unburn --status    # what the running instance is doing
-unburn --quit
+unburn hide      # hide compensation
+unburn show      # put it back
+unburn status    # what the running instance is doing
+unburn quit
 ```
-
-Bind `unburn --bypass` to a compositor shortcut if you want a global toggle.
 
 ## Profiles
 

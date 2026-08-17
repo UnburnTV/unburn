@@ -1,6 +1,6 @@
 //! A tiny control socket so a second invocation can talk to the running one.
 //!
-//! This is what makes `unburn --disable` a reliable escape hatch: it needs no
+//! This is what makes `unburn hide` a reliable escape hatch: it needs no
 //! window, no compositor cooperation and no global hotkey support.
 
 use std::{
@@ -19,9 +19,8 @@ use std::{
 /// What a second invocation can ask the running instance to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    Disable,
-    Enable,
-    ToggleBypass,
+    Hide,
+    Show,
     ShowWindow,
     Quit,
     Status,
@@ -33,10 +32,9 @@ impl Request {
         let line = line.trim();
         let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
         Some(match verb {
-            "disable" => Request::Disable,
-            "enable" => Request::Enable,
-            "bypass" => Request::ToggleBypass,
-            "show" => Request::ShowWindow,
+            "hide" => Request::Hide,
+            "show" => Request::Show,
+            "window" => Request::ShowWindow,
             "quit" => Request::Quit,
             "status" => Request::Status,
             "test-pattern" => Request::TestPattern(rest.trim().to_owned()),
@@ -46,10 +44,9 @@ impl Request {
 
     pub fn wire(&self) -> String {
         match self {
-            Request::Disable => "disable".into(),
-            Request::Enable => "enable".into(),
-            Request::ToggleBypass => "bypass".into(),
-            Request::ShowWindow => "show".into(),
+            Request::Hide => "hide".into(),
+            Request::Show => "show".into(),
+            Request::ShowWindow => "window".into(),
             Request::Quit => "quit".into(),
             Request::Status => "status".into(),
             Request::TestPattern(p) => format!("test-pattern {p}"),
@@ -117,7 +114,7 @@ impl Server {
         self.requests.try_iter().collect()
     }
 
-    /// Publish what `--status` should report.
+    /// Publish what `unburn status` should report.
     pub fn publish_status(&self, text: String) {
         if let Ok(mut status) = self.status.lock() {
             status.text = text;
@@ -231,9 +228,8 @@ mod tests {
     #[test]
     fn requests_round_trip_through_the_wire_format() {
         for request in [
-            Request::Disable,
-            Request::Enable,
-            Request::ToggleBypass,
+            Request::Hide,
+            Request::Show,
             Request::ShowWindow,
             Request::Quit,
             Request::Status,
@@ -271,11 +267,11 @@ mod tests {
             send(Some(&profile), &Request::Status).unwrap(),
             "compensation on"
         );
-        send(Some(&profile), &Request::Disable).unwrap();
+        send(Some(&profile), &Request::Hide).unwrap();
 
         // Give the server thread a moment to hand the request over.
         std::thread::sleep(Duration::from_millis(50));
-        assert!(server.poll().contains(&Request::Disable));
+        assert!(server.poll().contains(&Request::Hide));
     }
 
     #[test]
@@ -291,6 +287,6 @@ mod tests {
     #[test]
     fn connecting_to_nothing_fails_cleanly() {
         let profile = format!("absent-{}", std::process::id());
-        assert!(send(Some(&profile), &Request::Disable).is_err());
+        assert!(send(Some(&profile), &Request::Hide).is_err());
     }
 }

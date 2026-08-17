@@ -331,7 +331,7 @@ pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigE
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "unburn".to_string());
-    let mut command = format!("{exe} --no-gui");
+    let mut command = format!("{exe} start");
     if let Some(profile) = profile {
         command.push_str(&format!(" --profile {}", sanitize(profile)));
     }

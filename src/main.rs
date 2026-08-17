@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use unburn::{
     app::App,
-    cli::{Args, OnOff},
+    cli::{Args, Command, OnOff},
     config, gui, ipc, platform,
 };
 
@@ -30,29 +30,27 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<ExitCode, String> {
-    if let Some(onoff) = args.autostart {
-        let enable = onoff == OnOff::On;
-        config::set_autostart(enable, args.profile.as_deref()).map_err(|e| e.to_string())?;
-        println!(
-            "Start on login: {}",
-            if enable { "enabled" } else { "disabled" }
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if args.check {
-        for report in platform::detect() {
-            println!("{}\n", report.describe());
+    match args.command {
+        Some(Command::Autostart { state }) => {
+            let enable = state == OnOff::On;
+            config::set_autostart(enable, args.profile.as_deref()).map_err(|e| e.to_string())?;
+            println!(
+                "Start on login: {}",
+                if enable { "enabled" } else { "disabled" }
+            );
+            return Ok(ExitCode::SUCCESS);
         }
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    if args.is_remote_control() {
-        return remote_control(&args);
-    }
-
-    if args.list_displays {
-        return list_displays(&args);
+        Some(Command::Check) => {
+            for report in platform::detect() {
+                println!("{}\n", report.describe());
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        Some(Command::Hide | Command::Show | Command::Quit | Command::Status) => {
+            return remote_control(&args);
+        }
+        Some(Command::ListDisplays) => return list_displays(&args),
+        Some(Command::Start) | None => {}
     }
 
     // One instance owns the overlays; a second one just hands over its request.
@@ -76,7 +74,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         info!("{}", report.describe().replace('\n', " "));
     }
 
-    if args.no_gui {
+    if matches!(args.command, Some(Command::Start)) {
         run_headless(app, server, wake_rx)
     } else {
         gui::run(app, server, wake_rx).map(|()| ExitCode::SUCCESS)
@@ -85,16 +83,12 @@ fn run(args: Args) -> Result<ExitCode, String> {
 
 /// Talk to the instance that owns the overlays, then get out of the way.
 fn remote_control(args: &Args) -> Result<ExitCode, String> {
-    let request = if args.disable {
-        ipc::Request::Disable
-    } else if args.enable {
-        ipc::Request::Enable
-    } else if args.bypass {
-        ipc::Request::ToggleBypass
-    } else if args.quit {
-        ipc::Request::Quit
-    } else {
-        ipc::Request::Status
+    let request = match args.command {
+        Some(Command::Hide) => ipc::Request::Hide,
+        Some(Command::Show) => ipc::Request::Show,
+        Some(Command::Quit) => ipc::Request::Quit,
+        Some(Command::Status) => ipc::Request::Status,
+        _ => unreachable!("remote_control is only called for hide/show/quit/status"),
     };
 
     match ipc::send(args.profile.as_deref(), &request) {

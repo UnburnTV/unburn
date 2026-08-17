@@ -75,7 +75,7 @@ impl App {
             profile_name,
             service: None,
             reports: platform::detect(),
-            bypass: args.start_bypassed || args.disable,
+            bypass: false,
             selected_display: None,
             selected_defect: None,
             editing: false,
@@ -549,9 +549,8 @@ impl App {
     /// Act on a request that arrived over the control socket.
     pub fn handle_request(&mut self, request: &ipc::Request) {
         match request {
-            ipc::Request::Disable => self.set_bypass(true),
-            ipc::Request::Enable => self.set_bypass(false),
-            ipc::Request::ToggleBypass => self.toggle_bypass(),
+            ipc::Request::Hide => self.set_bypass(true),
+            ipc::Request::Show => self.set_bypass(false),
             ipc::Request::Quit => self.should_quit = true,
             ipc::Request::ShowWindow | ipc::Request::Status => {}
             ipc::Request::TestPattern(text) => {
@@ -568,7 +567,7 @@ impl App {
         }
     }
 
-    /// One line describing what is on screen, for `unburn --status`.
+    /// One line describing what is on screen, for `unburn status`.
     pub fn status_line(&self) -> String {
         let active = self
             .profile

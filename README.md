@@ -910,9 +910,9 @@ CLI:
 
 ```text
 display-compensator
-display-compensator --no-gui
+display-compensator start
 display-compensator --profile living-room
-display-compensator --disable
+display-compensator hide
 display-compensator --test-pattern 50
 ```
 
@@ -977,10 +977,10 @@ when the overlay is interactive.
 Also implement:
 
 ```text
-display-compensator --disable
+display-compensator hide
 ```
 
-which contacts an existing process and disables all overlays.
+which contacts an existing process and hides compensation.
 
 A crash must naturally destroy the windows and therefore remove compensation.
 
