@@ -1,0 +1,788 @@
+//! Platform-specific overlay windows, and the platform-independent logic that
+//! drives them.
+//!
+//! The overlay deliberately does not go through the same abstraction as the
+//! GUI: what a compensation layer needs from the windowing system — always on
+//! top, no input, no reserved space, exactly one output — is inherently
+//! platform-specific, and pretending otherwise only hides the differences that
+//! matter.
+
+pub mod interaction;
+pub mod wayland;
+pub mod x11;
+
+mod service;
+
+use std::collections::HashMap;
+
+use uuid::Uuid;
+
+use crate::{
+    compensation::{mask, Defect, Mask, MaskParams},
+    display::{DisplayIdentity, OutputId, OutputInfo, OverlayId},
+    overlay::{EditorDefect, EditorView, ShowMode, TestPatternState},
+};
+
+pub use interaction::{Button, EditorAction, EditorKey, Modifiers};
+pub use service::OverlayService;
+
+pub type Result<T> = std::result::Result<T, BackendError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum BackendError {
+    #[error("no usable overlay backend: {0}")]
+    Unavailable(String),
+    #[error("{0}")]
+    Protocol(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("no such output")]
+    UnknownOutput,
+    #[error("no such overlay")]
+    UnknownOverlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    Wayland,
+    X11,
+}
+
+impl BackendKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            BackendKind::Wayland => "Wayland",
+            BackendKind::X11 => "X11",
+        }
+    }
+}
+
+/// How well this session can host a compensation layer.
+///
+/// The distinction matters: a fallback window is not the same thing as a real
+/// overlay layer, and the program must not pretend that it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Support {
+    /// Everything the overlay needs is available.
+    Full,
+    /// Usable, but with a caveat the user needs to know about.
+    Limited(String),
+    /// This backend cannot run here at all.
+    Unavailable(String),
+}
+
+impl Support {
+    pub fn is_usable(&self) -> bool {
+        !matches!(self, Support::Unavailable(_))
+    }
+
+    pub fn headline(&self) -> &'static str {
+        match self {
+            Support::Full => "Full",
+            Support::Limited(_) => "Limited",
+            Support::Unavailable(_) => "Unavailable",
+        }
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Support::Full => None,
+            Support::Limited(reason) | Support::Unavailable(reason) => Some(reason),
+        }
+    }
+}
+
+/// What a backend reports about the session it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendReport {
+    pub kind: BackendKind,
+    pub support: Support,
+}
+
+impl BackendReport {
+    pub fn describe(&self) -> String {
+        match self.support.detail() {
+            None => format!("{} support: {}", self.kind.label(), self.support.headline()),
+            Some(detail) => format!(
+                "{} support: {}\n{}",
+                self.kind.label(),
+                self.support.headline(),
+                detail
+            ),
+        }
+    }
+}
+
+/// Overlay windows for one windowing system.
+pub trait OverlayBackend {
+    fn kind(&self) -> BackendKind;
+
+    /// How well this session supports a real compensation layer.
+    fn report(&self) -> BackendReport;
+
+    fn outputs(&self) -> Vec<OutputInfo>;
+
+    fn create_overlay(&mut self, output: OutputId) -> Result<OverlayId>;
+
+    fn destroy_overlay(&mut self, overlay: OverlayId);
+
+    /// Let the overlay take pointer and keyboard input, for on-screen editing.
+    /// In normal mode this is always off and the surface is click-through.
+    fn set_interactive(&mut self, overlay: OverlayId, interactive: bool);
+
+    fn set_visible(&mut self, overlay: OverlayId, visible: bool);
+
+    fn update_mask(&mut self, overlay: OverlayId, mask: &Mask);
+
+    /// The annotations drawn on top of the compensation while editing.
+    fn set_editor(&mut self, overlay: OverlayId, editor: Option<EditorView>);
+
+    /// The modelled defect field, needed only by the editor's "show model".
+    fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>);
+
+    fn set_dither(&mut self, overlay: OverlayId, dither: bool);
+
+    /// Show or hide the fullscreen calibration pattern on one output.
+    fn set_test_pattern(&mut self, output: OutputId, pattern: Option<TestPatternState>);
+
+    /// Push everything queued to the display server.
+    fn flush(&mut self) -> Result<()>;
+
+    /// Sleep until the display server or `wake` has something to say, then
+    /// process it.
+    ///
+    /// The backend owns the wait because getting it right is protocol-specific,
+    /// and because this is where the program spends essentially all of its
+    /// time: nothing should run between configuration changes.
+    fn poll_events(
+        &mut self,
+        wake: std::os::fd::BorrowedFd<'_>,
+        timeout: Option<std::time::Duration>,
+        events: &mut Vec<BackendEvent>,
+    ) -> Result<()>;
+}
+
+/// Something the backend noticed that the application should know about.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendEvent {
+    /// The set of connected monitors, or their geometry, changed.
+    OutputsChanged(Vec<OutputInfo>),
+    /// An edit made through the on-screen editor.
+    Editor(EditorAction),
+    /// A key pressed on the calibration pattern surface.
+    Pattern(PatternAction),
+    /// The display server went away; overlays are gone with it.
+    Disconnected(String),
+}
+
+/// Keyboard control of the calibration patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternAction {
+    Next,
+    Previous,
+    ToggleCompensation,
+    Exit,
+}
+
+/// Per-display compensation settings, resolved and ready to render.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplaySettings {
+    pub identity: DisplayIdentity,
+    pub enabled: bool,
+    pub params: MaskParams,
+    /// Panel coordinates; each surface applies its own rotation.
+    pub defects: Vec<Defect>,
+}
+
+/// Which screen is being edited on, and how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditingState {
+    pub identity: DisplayIdentity,
+    pub selected: Option<Uuid>,
+    pub show: ShowMode,
+}
+
+/// Everything the application wants on screen right now.
+///
+/// The application sends whole snapshots rather than incremental commands, so
+/// the backend can always reconcile towards a known state instead of replaying
+/// a history it might have missed part of.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DesiredState {
+    /// The instant bypass. Overlays stay alive but present nothing.
+    pub bypass: bool,
+    pub displays: Vec<DisplaySettings>,
+    pub editing: Option<EditingState>,
+    pub test_pattern: Option<TestPatternState>,
+}
+
+impl DesiredState {
+    fn settings_for<'a>(&'a self, output: &OutputInfo) -> Option<&'a DisplaySettings> {
+        self.displays
+            .iter()
+            .map(|d| (d.identity.match_score(&output.identity), d))
+            .filter(|(score, _)| *score >= crate::display::MatchScore::WEAK)
+            .max_by_key(|(score, _)| *score)
+            .map(|(_, d)| d)
+    }
+
+    fn editing_output(&self, output: &OutputInfo) -> Option<&EditingState> {
+        let editing = self.editing.as_ref()?;
+        (editing.identity.match_score(&output.identity) >= crate::display::MatchScore::WEAK)
+            .then_some(editing)
+    }
+}
+
+/// What one overlay's mask was last generated from.
+#[derive(Debug, Clone, PartialEq)]
+struct MaskKey {
+    defects: Vec<Defect>,
+    params: MaskParams,
+    width: u32,
+    height: u32,
+    transform: crate::display::Transform,
+    model: bool,
+}
+
+struct Live {
+    overlay: OverlayId,
+    key: Option<MaskKey>,
+}
+
+/// Drives a backend towards a [`DesiredState`].
+///
+/// This holds all the "when do we actually need to recompute" logic, which is
+/// what keeps the program idle: masks are regenerated only when a defect,
+/// compensation, gamma, quality or the output geometry moves.
+#[derive(Default)]
+pub struct Reconciler {
+    desired: DesiredState,
+    live: HashMap<OutputId, Live>,
+    dirty: bool,
+}
+
+impl Reconciler {
+    pub fn new() -> Self {
+        Self {
+            dirty: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn desired(&self) -> &DesiredState {
+        &self.desired
+    }
+
+    pub fn set_desired(&mut self, desired: DesiredState) {
+        if self.desired != desired {
+            self.desired = desired;
+            self.dirty = true;
+        }
+    }
+
+    /// Force a full pass, for instance after the outputs changed.
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Remove every overlay. Used by bypass-to-nothing, quit and the panic
+    /// button, all of which must not depend on any recomputation.
+    pub fn tear_down(&mut self, backend: &mut dyn OverlayBackend) {
+        for (_, live) in self.live.drain() {
+            backend.destroy_overlay(live.overlay);
+        }
+        self.dirty = true;
+    }
+
+    /// Bring the backend in line with the desired state.
+    pub fn sync(&mut self, backend: &mut dyn OverlayBackend) -> Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+        self.dirty = false;
+
+        let outputs = backend.outputs();
+
+        // Drop overlays whose output disappeared. The profile stays put, so the
+        // compensation comes back untouched if the monitor returns.
+        let present: Vec<OutputId> = outputs.iter().map(|o| o.id).collect();
+        let stale: Vec<OutputId> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|id| !present.contains(id))
+            .collect();
+        for id in stale {
+            if let Some(live) = self.live.remove(&id) {
+                backend.destroy_overlay(live.overlay);
+            }
+        }
+
+        for output in &outputs {
+            let settings = self.desired.settings_for(output);
+            let wanted = settings.map(|s| s.enabled).unwrap_or(false);
+
+            if !wanted {
+                if let Some(live) = self.live.remove(&output.id) {
+                    backend.destroy_overlay(live.overlay);
+                }
+                backend.set_test_pattern(output.id, None);
+                continue;
+            }
+            let settings = settings.expect("wanted implies settings");
+
+            let live = match self.live.get_mut(&output.id) {
+                Some(live) => live,
+                None => {
+                    let overlay = backend.create_overlay(output.id)?;
+                    self.live.insert(output.id, Live { overlay, key: None });
+                    self.live.get_mut(&output.id).expect("just inserted")
+                }
+            };
+            let overlay = live.overlay;
+
+            let editing = self.desired.editing_output(output);
+            let show = editing.map(|e| e.show).unwrap_or_default();
+
+            let key = MaskKey {
+                defects: settings.defects.clone(),
+                params: settings.params,
+                width: output.width,
+                height: output.height,
+                transform: output.transform,
+                model: editing.is_some() && show.draws_model(),
+            };
+
+            if live.key.as_ref() != Some(&key) {
+                let surface_defects: Vec<Defect> = settings
+                    .defects
+                    .iter()
+                    .map(|d| crate::overlay::transform_defect(d, output.transform))
+                    .collect();
+
+                let mask = mask::generate(
+                    &surface_defects,
+                    &settings.params,
+                    output.width,
+                    output.height,
+                );
+                backend.update_mask(overlay, &mask);
+
+                let model = key.model.then(|| {
+                    let (w, h) = settings
+                        .params
+                        .quality
+                        .resolution_for(output.width, output.height);
+                    mask::generate_model_field(&surface_defects, settings.params.composition, w, h)
+                });
+                backend.set_model(overlay, model);
+
+                live.key = Some(key);
+            }
+
+            backend.set_dither(overlay, settings.params.dither);
+            backend.set_visible(overlay, !self.desired.bypass);
+            backend.set_interactive(overlay, editing.is_some());
+            backend.set_editor(
+                overlay,
+                editing.map(|editing| EditorView {
+                    defects: settings
+                        .defects
+                        .iter()
+                        .filter_map(|d| EditorDefect::from_defect(d, output.transform))
+                        .collect(),
+                    selected: editing.selected,
+                    show: editing.show,
+                }),
+            );
+
+            backend.set_test_pattern(output.id, self.desired.test_pattern);
+        }
+
+        backend.flush()
+    }
+}
+
+/// Ask each windowing system what it can do here.
+pub fn detect() -> Vec<BackendReport> {
+    vec![wayland::probe(), x11::probe()]
+}
+
+/// The backend that should be used, given what the session offers.
+pub fn preferred_kind(reports: &[BackendReport]) -> Option<BackendKind> {
+    reports
+        .iter()
+        .filter(|r| r.support.is_usable())
+        .max_by_key(|r| match r.support {
+            Support::Full => 2,
+            Support::Limited(_) => 1,
+            Support::Unavailable(_) => 0,
+        })
+        .map(|r| r.kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compensation::Rgb;
+    use crate::{
+        compensation::{RadialDefect, Vec2},
+        display::Transform,
+    };
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Create(OutputId),
+        Destroy(OverlayId),
+        Mask(OverlayId),
+        Visible(OverlayId, bool),
+        Interactive(OverlayId, bool),
+        Editor(OverlayId, bool),
+    }
+
+    #[derive(Default)]
+    struct FakeBackend {
+        outputs: Vec<OutputInfo>,
+        next: u32,
+        calls: Vec<Call>,
+    }
+
+    impl FakeBackend {
+        fn masks(&self) -> usize {
+            self.calls
+                .iter()
+                .filter(|c| matches!(c, Call::Mask(_)))
+                .count()
+        }
+    }
+
+    impl OverlayBackend for FakeBackend {
+        fn kind(&self) -> BackendKind {
+            BackendKind::X11
+        }
+        fn report(&self) -> BackendReport {
+            BackendReport {
+                kind: BackendKind::X11,
+                support: Support::Full,
+            }
+        }
+        fn outputs(&self) -> Vec<OutputInfo> {
+            self.outputs.clone()
+        }
+        fn create_overlay(&mut self, output: OutputId) -> Result<OverlayId> {
+            self.calls.push(Call::Create(output));
+            self.next += 1;
+            Ok(OverlayId(self.next))
+        }
+        fn destroy_overlay(&mut self, overlay: OverlayId) {
+            self.calls.push(Call::Destroy(overlay));
+        }
+        fn set_interactive(&mut self, overlay: OverlayId, interactive: bool) {
+            self.calls.push(Call::Interactive(overlay, interactive));
+        }
+        fn set_visible(&mut self, overlay: OverlayId, visible: bool) {
+            self.calls.push(Call::Visible(overlay, visible));
+        }
+        fn update_mask(&mut self, overlay: OverlayId, _mask: &Mask) {
+            self.calls.push(Call::Mask(overlay));
+        }
+        fn set_editor(&mut self, overlay: OverlayId, editor: Option<EditorView>) {
+            self.calls.push(Call::Editor(overlay, editor.is_some()));
+        }
+        fn set_model(&mut self, _overlay: OverlayId, _model: Option<Mask>) {}
+        fn set_dither(&mut self, _overlay: OverlayId, _dither: bool) {}
+        fn set_test_pattern(&mut self, _output: OutputId, _pattern: Option<TestPatternState>) {}
+        fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn poll_events(
+            &mut self,
+            _wake: std::os::fd::BorrowedFd<'_>,
+            _timeout: Option<std::time::Duration>,
+            _events: &mut Vec<BackendEvent>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn identity(connector: &str) -> DisplayIdentity {
+        DisplayIdentity {
+            connector: Some(connector.into()),
+            ..Default::default()
+        }
+    }
+
+    fn output(id: u32, connector: &str) -> OutputInfo {
+        OutputInfo {
+            id: OutputId(id),
+            identity: identity(connector),
+            width: 1920,
+            height: 1080,
+            position: (0, 0),
+            scale: 1.0,
+            transform: Transform::Normal,
+            refresh_mhz: None,
+        }
+    }
+
+    fn settings(connector: &str, enabled: bool) -> DisplaySettings {
+        DisplaySettings {
+            identity: identity(connector),
+            enabled,
+            params: MaskParams::default(),
+            defects: vec![Defect::Radial(RadialDefect {
+                center: Vec2::splat(0.5),
+                strength: Rgb::splat(0.1),
+                ..Default::default()
+            })],
+        }
+    }
+
+    #[test]
+    fn an_enabled_display_gets_exactly_one_overlay() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        });
+
+        reconciler.sync(&mut backend).unwrap();
+        assert!(backend.calls.contains(&Call::Create(OutputId(1))));
+        assert_eq!(backend.masks(), 1);
+    }
+
+    #[test]
+    fn a_disabled_display_gets_none() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", false)],
+            ..Default::default()
+        });
+
+        reconciler.sync(&mut backend).unwrap();
+        assert!(!backend.calls.iter().any(|c| matches!(c, Call::Create(_))));
+    }
+
+    #[test]
+    fn an_unconfigured_display_is_left_alone() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "DP-9")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        });
+
+        reconciler.sync(&mut backend).unwrap();
+        assert!(!backend.calls.iter().any(|c| matches!(c, Call::Create(_))));
+    }
+
+    #[test]
+    fn nothing_happens_when_nothing_changed() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        let state = DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        };
+        reconciler.set_desired(state.clone());
+        reconciler.sync(&mut backend).unwrap();
+
+        let before = backend.calls.len();
+        reconciler.set_desired(state);
+        reconciler.sync(&mut backend).unwrap();
+        assert_eq!(
+            backend.calls.len(),
+            before,
+            "an unchanged state must do no work"
+        );
+    }
+
+    #[test]
+    fn bypass_hides_the_overlay_without_regenerating_it() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        let state = DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        };
+        reconciler.set_desired(state.clone());
+        reconciler.sync(&mut backend).unwrap();
+        let masks = backend.masks();
+
+        reconciler.set_desired(DesiredState {
+            bypass: true,
+            ..state
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        assert_eq!(backend.masks(), masks, "bypass must not recompute the mask");
+        assert!(backend.calls.contains(&Call::Visible(OverlayId(1), false)));
+    }
+
+    #[test]
+    fn moving_a_defect_regenerates_the_mask() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        let mut moved = settings("HDMI-A-1", true);
+        moved.defects[0].set_center(Vec2::new(0.2, 0.3));
+        reconciler.set_desired(DesiredState {
+            displays: vec![moved],
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        assert_eq!(backend.masks(), 2);
+    }
+
+    #[test]
+    fn a_resolution_change_regenerates_the_mask() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        backend.outputs[0].width = 3840;
+        backend.outputs[0].height = 2160;
+        reconciler.invalidate();
+        reconciler.sync(&mut backend).unwrap();
+
+        assert_eq!(backend.masks(), 2);
+    }
+
+    #[test]
+    fn an_unplugged_monitor_loses_its_overlay_but_keeps_its_profile() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        let state = DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        };
+        reconciler.set_desired(state.clone());
+        reconciler.sync(&mut backend).unwrap();
+
+        backend.outputs.clear();
+        reconciler.invalidate();
+        reconciler.sync(&mut backend).unwrap();
+        assert!(backend.calls.contains(&Call::Destroy(OverlayId(1))));
+
+        // Replugged, possibly on another connector.
+        backend.outputs.push(output(2, "HDMI-A-1"));
+        reconciler.invalidate();
+        reconciler.sync(&mut backend).unwrap();
+        assert!(backend.calls.contains(&Call::Create(OutputId(2))));
+        assert_eq!(reconciler.desired().displays, state.displays);
+    }
+
+    #[test]
+    fn editing_makes_only_that_screen_interactive() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1"), output(2, "DP-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true), settings("DP-1", true)],
+            editing: Some(EditingState {
+                identity: identity("HDMI-A-1"),
+                selected: None,
+                show: ShowMode::Correction,
+            }),
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        let edited = backend
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Interactive(id, true) => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(edited.len(), 1);
+        assert!(backend.calls.contains(&Call::Editor(edited[0], true)));
+    }
+
+    #[test]
+    fn tearing_down_removes_every_overlay() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1"), output(2, "DP-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![settings("HDMI-A-1", true), settings("DP-1", true)],
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        reconciler.tear_down(&mut backend);
+        assert_eq!(
+            backend
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::Destroy(_)))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_full_backend_is_preferred_over_a_limited_one() {
+        let reports = vec![
+            BackendReport {
+                kind: BackendKind::Wayland,
+                support: Support::Limited("no layer shell".into()),
+            },
+            BackendReport {
+                kind: BackendKind::X11,
+                support: Support::Full,
+            },
+        ];
+        assert_eq!(preferred_kind(&reports), Some(BackendKind::X11));
+    }
+
+    #[test]
+    fn nothing_is_preferred_when_nothing_works() {
+        let reports = vec![BackendReport {
+            kind: BackendKind::Wayland,
+            support: Support::Unavailable("no display".into()),
+        }];
+        assert_eq!(preferred_kind(&reports), None);
+    }
+}
