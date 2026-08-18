@@ -1,0 +1,16 @@
+---
+description: Require ASCII-only text in all user-visible CLI output
+alwaysApply: true
+---
+
+# ASCII-Only CLI Output
+
+- Every string that the program can emit to a terminal must contain ASCII characters only.
+
+```rust
+// Bad: contains a Unicode check mark.
+println!("Done: \u{2713}");
+
+// Good: ASCII only.
+println!("[ok] Done");
+```
