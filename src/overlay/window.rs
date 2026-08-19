@@ -51,8 +51,18 @@ impl OverlaySurface {
         self.renderer.set_editor(editor);
     }
 
+    /// Highlight the resize handle under the pointer.
+    pub fn set_handle_hover(&mut self, center: Option<crate::compensation::Vec2>) {
+        self.renderer.set_handle_hover(center);
+    }
+
     pub fn set_disc(&mut self, disc: Option<crate::overlay::CalibrationDisc>) {
         self.renderer.set_disc(disc);
+    }
+
+    /// Red cross over a spot the GUI is pointing at. Does not resample.
+    pub fn set_hover(&mut self, center: Option<crate::compensation::Vec2>) {
+        self.renderer.set_hover(center);
     }
 
     pub fn set_dither(&mut self, dither: bool) {

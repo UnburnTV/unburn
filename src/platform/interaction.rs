@@ -14,9 +14,6 @@ use crate::{
     overlay::{EditorView, Grab},
 };
 
-/// How close, in normalized units, the pointer must get to grab a handle.
-const HANDLE_TOLERANCE: f32 = 0.012;
-
 /// Multiplicative radius change per wheel notch.
 const WHEEL_RADIUS_STEP: f32 = 1.08;
 /// Strength change per wheel notch, in absolute brightness excess.
@@ -109,12 +106,15 @@ pub struct EditorInteraction {
     grab: Option<Grabbed>,
     pointer: Vec2,
     modifiers: Modifiers,
+    surface_size: (u32, u32),
+    has_pointer: bool,
 }
 
 impl EditorInteraction {
     pub fn new(transform: Transform) -> Self {
         Self {
             transform,
+            surface_size: (1000, 1000),
             ..Default::default()
         }
     }
@@ -131,6 +131,10 @@ impl EditorInteraction {
         }
     }
 
+    pub fn set_surface_size(&mut self, width: u32, height: u32) {
+        self.surface_size = (width.max(1), height.max(1));
+    }
+
     pub fn set_modifiers(&mut self, modifiers: Modifiers) {
         self.modifiers = modifiers;
     }
@@ -139,14 +143,44 @@ impl EditorInteraction {
         self.grab = None;
     }
 
+    /// The pointer left the surface; nothing is hovered or grabbed.
+    pub fn leave(&mut self) {
+        self.grab = None;
+        self.has_pointer = false;
+    }
+
     pub fn pointer_position(&self) -> Vec2 {
         self.pointer
     }
 
+    /// Centre of the resize handle under the pointer, if any.
+    pub fn hovered_handle(&self) -> Option<Vec2> {
+        if !self.has_pointer {
+            return None;
+        }
+        let (width, height) = self.surface_size;
+        if let Some(grabbed) = self.grab {
+            let defect = self.view.defects.iter().find(|d| d.id == grabbed.id)?;
+            let handles = defect.handles();
+            return match grabbed.grab {
+                Grab::Center => None,
+                Grab::Width => Some(nearest(&handles[0..2], self.pointer)),
+                Grab::Height => Some(nearest(&handles[2..4], self.pointer)),
+            };
+        }
+        self.view.hovered_handle(self.pointer, width, height)
+    }
+
+    fn hit_test(&self, uv: Vec2) -> Option<(Uuid, Grab)> {
+        let (width, height) = self.surface_size;
+        self.view.hit_test(uv, width, height)
+    }
+
     pub fn press(&mut self, uv: Vec2, button: Button) -> Option<EditorAction> {
         self.pointer = uv;
+        self.has_pointer = true;
         match button {
-            Button::Primary => match self.view.hit_test(uv, HANDLE_TOLERANCE) {
+            Button::Primary => match self.hit_test(uv) {
                 Some((id, grab)) => {
                     self.grab = self.anchor(id, grab, uv);
                     (self.view.selected != Some(id)).then_some(EditorAction::Select(id))
@@ -160,7 +194,7 @@ impl EditorInteraction {
                 }
             },
             Button::Secondary => {
-                let (id, _) = self.view.hit_test(uv, HANDLE_TOLERANCE)?;
+                let (id, _) = self.hit_test(uv)?;
                 Some(EditorAction::ToggleEnabled(id))
             }
         }
@@ -168,6 +202,7 @@ impl EditorInteraction {
 
     pub fn motion(&mut self, uv: Vec2) -> Option<EditorAction> {
         self.pointer = uv;
+        self.has_pointer = true;
 
         let Grabbed { id, grab, offset } = self.grab?;
         let defect = self.view.defects.iter().find(|d| d.id == id)?;
@@ -215,11 +250,10 @@ impl EditorInteraction {
 
     /// One wheel notch; `notches` is positive when scrolling up.
     pub fn wheel(&mut self, notches: f32) -> Option<EditorAction> {
-        let id = self.view.selected.or_else(|| {
-            self.view
-                .hit_test(self.pointer, HANDLE_TOLERANCE)
-                .map(|(id, _)| id)
-        })?;
+        let id = self
+            .view
+            .selected
+            .or_else(|| self.hit_test(self.pointer).map(|(id, _)| id))?;
 
         Some(if self.modifiers.shift {
             EditorAction::AdjustStrength {
@@ -317,6 +351,7 @@ mod tests {
         let (id, view) = view(center, radius);
         let mut editor = EditorInteraction::new(Transform::Normal);
         editor.set_view(view, Transform::Normal);
+        editor.set_surface_size(1000, 1000);
         (id, editor)
     }
 
@@ -446,6 +481,36 @@ mod tests {
         editor.press(Vec2::splat(0.5), Button::Primary);
         editor.release();
         assert_eq!(editor.motion(Vec2::new(0.7, 0.7)), None);
+    }
+
+    #[test]
+    fn a_press_beside_a_handle_grabs_the_body() {
+        let (_, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+        // One pixel inside the ellipse from the right-hand handle on a
+        // 1000 px surface: the old circular tolerance would have grabbed Width.
+        let beside = Vec2::new(594.0 / 1000.0, 0.5);
+        editor.press(beside, Button::Primary);
+        match editor.motion(Vec2::new(0.55, 0.5)) {
+            Some(EditorAction::Move { .. }) => {}
+            other => panic!("expected a move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hovering_a_handle_reports_its_centre() {
+        let (_, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+        editor.motion(Vec2::new(0.6, 0.5));
+        let hovered = editor.hovered_handle().expect("on the handle");
+        assert!((hovered.x - 0.6).abs() < 1e-5);
+        assert!((hovered.y - 0.5).abs() < 1e-5);
+
+        editor.motion(Vec2::new(0.5, 0.5));
+        assert_eq!(editor.hovered_handle(), None);
+
+        editor.leave();
+        editor.motion(Vec2::new(0.6, 0.5));
+        editor.leave();
+        assert_eq!(editor.hovered_handle(), None);
     }
 
     #[test]

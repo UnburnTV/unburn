@@ -437,6 +437,8 @@ impl X11Backend {
             events |= xproto::EventMask::BUTTON_PRESS
                 | xproto::EventMask::BUTTON_RELEASE
                 | xproto::EventMask::POINTER_MOTION
+                | xproto::EventMask::ENTER_WINDOW
+                | xproto::EventMask::LEAVE_WINDOW
                 | xproto::EventMask::KEY_PRESS;
         }
 
@@ -656,15 +658,22 @@ impl X11Backend {
                     _ => None,
                 };
                 self.emit(action);
+                self.sync_handle_hover(press.event)?;
             }
             Event::ButtonRelease(release) => {
                 self.with_interaction::<()>(release.event, |i| i.release());
+                self.sync_handle_hover(release.event)?;
             }
             Event::MotionNotify(motion) => {
                 let uv = self.normalize(motion.event, motion.event_x, motion.event_y);
                 self.update_modifiers(motion.state.into());
                 let action = self.with_interaction(motion.event, |i| i.motion(uv));
                 self.emit(action);
+                self.sync_handle_hover(motion.event)?;
+            }
+            Event::LeaveNotify(leave) => {
+                self.with_interaction::<()>(leave.event, |i| i.leave());
+                self.sync_handle_hover(leave.event)?;
             }
             _ => {}
         }
@@ -754,6 +763,18 @@ impl X11Backend {
         if let Some(action) = action {
             self.pending.push(BackendEvent::Editor(action));
         }
+    }
+
+    fn sync_handle_hover(&mut self, window: xproto::Window) -> Result<()> {
+        let Some(id) = self.overlay_by_window(window) else {
+            return Ok(());
+        };
+        if let Some(overlay) = self.overlays.get_mut(&id) {
+            overlay
+                .surface
+                .set_handle_hover(overlay.interaction.hovered_handle());
+        }
+        Ok(())
     }
 }
 
@@ -886,6 +907,8 @@ impl OverlayBackend for X11Backend {
             .map_err(protocol_error)?;
 
         let id = OverlayId(self.allocate_id());
+        let mut interaction = EditorInteraction::new(transform);
+        interaction.set_surface_size(geometry.width as u32, geometry.height as u32);
         self.overlays.insert(
             id,
             Overlay {
@@ -896,7 +919,7 @@ impl OverlayBackend for X11Backend {
                 geometry,
                 surface: OverlaySurface::new(geometry.width as u32, geometry.height as u32),
                 mapped: false,
-                interaction: EditorInteraction::new(transform),
+                interaction,
             },
         );
         debug!(?id, ?geometry, "created an X11 overlay window");
@@ -925,7 +948,8 @@ impl OverlayBackend for X11Backend {
         entry.surface.set_interactive(interactive);
         let window = entry.window;
         if !interactive {
-            entry.interaction.release();
+            entry.interaction.leave();
+            entry.surface.set_handle_hover(None);
         }
 
         if let Err(error) = self.set_click_through(window, !interactive) {
@@ -974,7 +998,13 @@ impl OverlayBackend for X11Backend {
         if let Some(view) = editor.clone() {
             entry.interaction.set_view(view, transform);
         }
+        entry
+            .interaction
+            .set_surface_size(entry.surface.width(), entry.surface.height());
         entry.surface.set_editor(editor);
+        entry
+            .surface
+            .set_handle_hover(entry.interaction.hovered_handle());
     }
 
     fn set_disc(&mut self, overlay: OverlayId, disc: Option<crate::overlay::CalibrationDisc>) {
@@ -982,6 +1012,13 @@ impl OverlayBackend for X11Backend {
             return;
         };
         entry.surface.set_disc(disc);
+    }
+
+    fn set_hover(&mut self, overlay: OverlayId, center: Option<Vec2>) {
+        let Some(entry) = self.overlays.get_mut(&overlay) else {
+            return;
+        };
+        entry.surface.set_hover(center);
     }
 
     fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>) {

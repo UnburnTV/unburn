@@ -139,6 +139,11 @@ pub struct EditorDefect {
 }
 
 impl EditorDefect {
+    /// Half-extent of a resize handle, in overlay pixels. Drawing and
+    /// hit-testing share this so the square the pointer grabs is the square
+    /// that is drawn.
+    pub const HANDLE_HALF_PX: i32 = 5;
+
     /// Project a stored defect into the coordinates of a possibly rotated
     /// surface.
     pub fn from_defect(defect: &Defect, transform: Transform) -> Option<EditorDefect> {
@@ -210,15 +215,21 @@ impl EditorView {
 
     /// Find what the pointer is over, preferring the current selection so a
     /// stack of overlapping defects stays workable.
-    pub fn hit_test(&self, uv: Vec2, tolerance: f32) -> Option<(Uuid, Grab)> {
+    ///
+    /// Resize handles are tested as axis-aligned pixel squares of
+    /// [`EditorDefect::HANDLE_HALF_PX`], matching what the overlay draws.
+    /// Only the selected defect has handles.
+    pub fn hit_test(&self, uv: Vec2, width: u32, height: u32) -> Option<(Uuid, Grab)> {
         let mut ordered: Vec<&EditorDefect> = self.defects.iter().collect();
         ordered.sort_by_key(|d| Some(d.id) != self.selected);
 
         for defect in ordered {
-            for (index, handle) in defect.handles().iter().enumerate() {
-                if (*handle - uv).length() <= tolerance {
-                    let grab = if index < 2 { Grab::Width } else { Grab::Height };
-                    return Some((defect.id, grab));
+            if self.selected == Some(defect.id) {
+                for (index, handle) in defect.handles().iter().enumerate() {
+                    if handle_contains(*handle, uv, width, height) {
+                        let grab = if index < 2 { Grab::Width } else { Grab::Height };
+                        return Some((defect.id, grab));
+                    }
                 }
             }
             if defect.distance(uv) <= 1.0 {
@@ -227,6 +238,30 @@ impl EditorView {
         }
         None
     }
+
+    /// The selected handle under the pointer, if any, as a surface UV.
+    pub fn hovered_handle(&self, uv: Vec2, width: u32, height: u32) -> Option<Vec2> {
+        let defect = self.selected_defect()?;
+        defect
+            .handles()
+            .into_iter()
+            .find(|handle| handle_contains(*handle, uv, width, height))
+    }
+}
+
+/// Overlay pixel of a surface UV, using the same rounding as the renderer.
+pub fn overlay_pixel(uv: Vec2, width: u32, height: u32) -> (i32, i32) {
+    (
+        (uv.x * width as f32).round() as i32,
+        (uv.y * height as f32).round() as i32,
+    )
+}
+
+fn handle_contains(handle: Vec2, uv: Vec2, width: u32, height: u32) -> bool {
+    let (hx, hy) = overlay_pixel(handle, width, height);
+    let (px, py) = overlay_pixel(uv, width, height);
+    let half = EditorDefect::HANDLE_HALF_PX;
+    (px - hx).abs() <= half && (py - hy).abs() <= half
 }
 
 /// A fullscreen calibration pattern.
@@ -391,18 +426,64 @@ mod tests {
         };
 
         assert_eq!(
-            view.hit_test(Vec2::new(0.5, 0.5), 0.01),
+            view.hit_test(Vec2::new(0.5, 0.5), 1000, 1000),
             Some((id, Grab::Center))
         );
         assert_eq!(
-            view.hit_test(Vec2::new(0.6, 0.5), 0.02),
+            view.hit_test(Vec2::new(0.6, 0.5), 1000, 1000),
             Some((id, Grab::Width))
         );
         assert_eq!(
-            view.hit_test(Vec2::new(0.5, 0.6), 0.02),
+            view.hit_test(Vec2::new(0.5, 0.6), 1000, 1000),
             Some((id, Grab::Height))
         );
-        assert_eq!(view.hit_test(Vec2::new(0.9, 0.9), 0.01), None);
+        assert_eq!(view.hit_test(Vec2::new(0.9, 0.9), 1000, 1000), None);
+    }
+
+    #[test]
+    fn handle_hitboxes_match_the_drawn_squares() {
+        let d = defect(Vec2::new(0.5, 0.5), Vec2::new(0.1, 0.1));
+        let id = d.id;
+        let view = EditorView {
+            defects: vec![d],
+            selected: Some(id),
+            ..Default::default()
+        };
+        let (w, h) = (1000u32, 1000u32);
+        let half = EditorDefect::HANDLE_HALF_PX;
+        // Right-hand width handle sits at (600, 500).
+        let on_edge = Vec2::new((600 - half) as f32 / 1000.0, 0.5);
+        let past_edge = Vec2::new((600 - half - 1) as f32 / 1000.0, 0.5);
+        assert_eq!(view.hit_test(on_edge, w, h), Some((id, Grab::Width)));
+        // Six pixels inward is still well inside the old 0.012 UV circle, but
+        // it is outside the drawn square, so the body takes the press.
+        assert_eq!(view.hit_test(past_edge, w, h), Some((id, Grab::Center)));
+        let diagonal = Vec2::new(608.0 / 1000.0, 508.0 / 1000.0);
+        assert_eq!(
+            view.hit_test(diagonal, w, h),
+            None,
+            "a square must not keep the old circular slack"
+        );
+    }
+
+    #[test]
+    fn unselected_spots_have_no_handle_hitboxes() {
+        let d = defect(Vec2::new(0.5, 0.5), Vec2::new(0.1, 0.1));
+        let id = d.id;
+        let view = EditorView {
+            defects: vec![d],
+            selected: None,
+            ..Default::default()
+        };
+        // Handles are only drawn on the selection, so they must not steal a
+        // press on an unselected contour.
+        let hit = view.hit_test(Vec2::new(0.6, 0.5), 1000, 1000);
+        assert_ne!(hit, Some((id, Grab::Width)));
+        assert_ne!(hit, Some((id, Grab::Height)));
+        assert_eq!(
+            view.hit_test(Vec2::new(0.5, 0.5), 1000, 1000),
+            Some((id, Grab::Center))
+        );
     }
 
     #[test]
@@ -415,8 +496,14 @@ mod tests {
             selected: Some(b_id),
             ..Default::default()
         };
-        assert_eq!(view.hit_test(Vec2::new(0.5, 0.5), 0.01).unwrap().0, b_id);
-        assert_ne!(view.hit_test(Vec2::new(0.5, 0.5), 0.01).unwrap().0, a_id);
+        assert_eq!(
+            view.hit_test(Vec2::new(0.5, 0.5), 1000, 1000).unwrap().0,
+            b_id
+        );
+        assert_ne!(
+            view.hit_test(Vec2::new(0.5, 0.5), 1000, 1000).unwrap().0,
+            a_id
+        );
     }
 
     #[test]

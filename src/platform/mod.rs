@@ -141,6 +141,10 @@ pub trait OverlayBackend {
     /// Rotating calibration disc behind the spot whose Edit panel is open.
     fn set_disc(&mut self, overlay: OverlayId, disc: Option<CalibrationDisc>);
 
+    /// Red cross locating the spot the GUI is pointing at. Must not force a
+    /// mask resample: hovering a list row has to stay cheap.
+    fn set_hover(&mut self, overlay: OverlayId, center: Option<crate::compensation::Vec2>);
+
     /// The modelled defect field, needed only by the editor's "show model".
     fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>);
 
@@ -219,6 +223,8 @@ pub struct DesiredState {
     pub editing: Option<EditingState>,
     /// Spot whose Edit panel is open, on that display: draw the rotating disc.
     pub calibration_disc: Option<(DisplayIdentity, Uuid)>,
+    /// Spot the GUI is pointing at, so the overlay can mark it. Not an edit.
+    pub hovered: Option<(DisplayIdentity, Uuid)>,
     /// Wedges on that disc, in palette order.
     pub disc_colors: Vec<[u8; 3]>,
     pub test_pattern: Option<TestPatternState>,
@@ -242,6 +248,11 @@ impl DesiredState {
 
     fn disc_for_output(&self, output: &OutputInfo) -> Option<Uuid> {
         let (identity, id) = self.calibration_disc.as_ref()?;
+        (identity.match_score(&output.identity) >= crate::display::MatchScore::WEAK).then_some(*id)
+    }
+
+    fn hovered_for_output(&self, output: &OutputInfo) -> Option<Uuid> {
+        let (identity, id) = self.hovered.as_ref()?;
         (identity.match_score(&output.identity) >= crate::display::MatchScore::WEAK).then_some(*id)
     }
 }
@@ -446,6 +457,22 @@ impl Reconciler {
             });
             backend.set_disc(overlay, disc);
 
+            let hover = self.desired.hovered_for_output(output).and_then(|id| {
+                if editing.is_some_and(|e| e.selected == Some(id)) {
+                    return None;
+                }
+                if self.desired.disc_for_output(output) == Some(id) {
+                    return None;
+                }
+                settings
+                    .defects
+                    .iter()
+                    .find(|d| d.id() == id)
+                    .and_then(|d| EditorDefect::from_defect(d, output.transform))
+                    .map(|defect| defect.center)
+            });
+            backend.set_hover(overlay, hover);
+
             backend.set_test_pattern(output.id, self.desired.test_pattern);
         }
 
@@ -488,6 +515,7 @@ mod tests {
         Visible(OverlayId, bool),
         Interactive(OverlayId, bool),
         Editor(OverlayId, bool),
+        Hover(OverlayId, bool),
     }
 
     #[derive(Default)]
@@ -540,6 +568,9 @@ mod tests {
             self.calls.push(Call::Editor(overlay, editor.is_some()));
         }
         fn set_disc(&mut self, _overlay: OverlayId, _disc: Option<CalibrationDisc>) {}
+        fn set_hover(&mut self, overlay: OverlayId, center: Option<Vec2>) {
+            self.calls.push(Call::Hover(overlay, center.is_some()));
+        }
         fn set_model(&mut self, _overlay: OverlayId, _model: Option<Mask>) {}
         fn set_dither(&mut self, _overlay: OverlayId, _dither: bool) {}
         fn set_test_pattern(&mut self, _output: OutputId, _pattern: Option<TestPatternState>) {}
@@ -824,6 +855,68 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(edited.len(), 1);
         assert!(backend.calls.contains(&Call::Editor(edited[0], true)));
+    }
+
+    #[test]
+    fn hovering_a_spot_does_not_regenerate_the_mask() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        let state = DesiredState {
+            displays: vec![settings("HDMI-A-1", true)],
+            ..Default::default()
+        };
+        let id = state.displays[0].defects[0].id();
+        reconciler.set_desired(state.clone());
+        reconciler.sync(&mut backend).unwrap();
+        let masks = backend.masks();
+
+        reconciler.set_desired(DesiredState {
+            hovered: Some((identity("HDMI-A-1"), id)),
+            ..state
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        assert_eq!(
+            backend.masks(),
+            masks,
+            "pointing at a list row must not rebuild the compensation"
+        );
+        assert!(backend.calls.contains(&Call::Hover(OverlayId(1), true)));
+    }
+
+    #[test]
+    fn the_locator_stays_off_a_spot_being_moved() {
+        let mut backend = FakeBackend {
+            outputs: vec![output(1, "HDMI-A-1")],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        let displays = vec![settings("HDMI-A-1", true)];
+        let id = displays[0].defects[0].id();
+        reconciler.set_desired(DesiredState {
+            displays,
+            editing: Some(EditingState {
+                identity: identity("HDMI-A-1"),
+                selected: Some(id),
+                show: ShowMode::Outlines,
+            }),
+            hovered: Some((identity("HDMI-A-1"), id)),
+            ..Default::default()
+        });
+        reconciler.sync(&mut backend).unwrap();
+
+        let last_hover = backend.calls.iter().rev().find_map(|c| match c {
+            Call::Hover(_, on) => Some(*on),
+            _ => None,
+        });
+        assert_eq!(
+            last_hover,
+            Some(false),
+            "Move already marks the spot; the list hover must not pile on"
+        );
     }
 
     #[test]

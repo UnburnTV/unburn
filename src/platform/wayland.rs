@@ -569,6 +569,8 @@ impl OverlayBackend for WaylandBackend {
         layer.commit();
 
         let id = OverlayId(self.state.allocate_id());
+        let mut interaction = EditorInteraction::new(info.transform);
+        interaction.set_surface_size(info.width.max(1), info.height.max(1));
         self.state.overlays.insert(
             id,
             Overlay {
@@ -579,7 +581,7 @@ impl OverlayBackend for WaylandBackend {
                 configured: false,
                 dirty: true,
                 blanked: false,
-                interaction: EditorInteraction::new(info.transform),
+                interaction,
                 transform: info.transform,
             },
         );
@@ -615,7 +617,8 @@ impl OverlayBackend for WaylandBackend {
                 .layer
                 .set_keyboard_interactivity(KeyboardInteractivity::None);
             set_empty_input_region(compositor, wl_surface);
-            overlay.interaction.release();
+            overlay.interaction.leave();
+            overlay.surface.set_handle_hover(None);
         }
         overlay.layer.commit();
     }
@@ -639,12 +642,24 @@ impl OverlayBackend for WaylandBackend {
         if let Some(view) = editor.clone() {
             overlay.interaction.set_view(view, overlay.transform);
         }
+        overlay
+            .interaction
+            .set_surface_size(overlay.surface.width(), overlay.surface.height());
         overlay.surface.set_editor(editor);
+        overlay
+            .surface
+            .set_handle_hover(overlay.interaction.hovered_handle());
     }
 
     fn set_disc(&mut self, overlay: OverlayId, disc: Option<crate::overlay::CalibrationDisc>) {
         if let Some(overlay) = self.state.overlays.get_mut(&overlay) {
             overlay.surface.set_disc(disc);
+        }
+    }
+
+    fn set_hover(&mut self, overlay: OverlayId, center: Option<Vec2>) {
+        if let Some(overlay) = self.state.overlays.get_mut(&overlay) {
+            overlay.surface.set_hover(center);
         }
     }
 
@@ -886,6 +901,9 @@ impl LayerShellHandler for State {
                 (width, height)
             };
             overlay.surface.set_size(width.max(1), height.max(1));
+            overlay
+                .interaction
+                .set_surface_size(width.max(1), height.max(1));
             overlay.configured = true;
             overlay.dirty = true;
             return;
@@ -1089,8 +1107,12 @@ impl PointerHandler for State {
                     0x111 => overlay.interaction.press(uv, Button::Secondary),
                     _ => None,
                 },
-                PointerEventKind::Release { .. } | PointerEventKind::Leave { .. } => {
+                PointerEventKind::Release { .. } => {
                     overlay.interaction.release();
+                    None
+                }
+                PointerEventKind::Leave { .. } => {
+                    overlay.interaction.leave();
                     None
                 }
                 PointerEventKind::Motion { .. } | PointerEventKind::Enter { .. } => {
@@ -1111,6 +1133,10 @@ impl PointerHandler for State {
                     }
                 }
             };
+
+            overlay
+                .surface
+                .set_handle_hover(overlay.interaction.hovered_handle());
 
             if let Some(action) = action {
                 self.events.push(BackendEvent::Editor(action));

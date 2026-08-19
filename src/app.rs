@@ -52,6 +52,8 @@ pub struct App {
     editing: bool,
     /// Spot whose Edit panel is open: rotating calibration disc behind it.
     calibration_disc: Option<Uuid>,
+    /// Spot the GUI list is pointing at. Locator only; not an edit.
+    hovered_defect: Option<Uuid>,
     /// Colours on that disc, in palette order. Shared across spots.
     disc_colors: Vec<[u8; 3]>,
     show_mode: ShowMode,
@@ -84,6 +86,7 @@ impl App {
             selected_defect: None,
             editing: false,
             calibration_disc: None,
+            hovered_defect: None,
             disc_colors: DiscSwatch::default_colors(),
             show_mode: ShowMode::default(),
             test_pattern: args
@@ -198,6 +201,15 @@ impl App {
     pub fn set_calibration_disc(&mut self, id: Option<Uuid>) {
         if self.calibration_disc != id {
             self.calibration_disc = id;
+            self.sync();
+        }
+    }
+
+    /// Point at a spot from the list. Cheap: the overlay patches a cross
+    /// onto the pixels it already has.
+    pub fn set_hovered_defect(&mut self, id: Option<Uuid>) {
+        if self.hovered_defect != id {
+            self.hovered_defect = id;
             self.sync();
         }
     }
@@ -516,6 +528,13 @@ impl App {
                 show: self.show_mode,
             }),
             calibration_disc: self.calibration_disc.and_then(|id| {
+                self.profile
+                    .displays
+                    .iter()
+                    .find(|d| d.defects.iter().any(|defect| defect.id() == id))
+                    .map(|d| (d.identity.clone(), id))
+            }),
+            hovered: self.hovered_defect.and_then(|id| {
                 self.profile
                     .displays
                     .iter()

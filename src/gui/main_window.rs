@@ -238,6 +238,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
 
     let Some(display) = app.selected_display() else {
         ui.label("Select a display first.");
+        app.set_hovered_defect(None);
         return;
     };
     let entries: Vec<(Uuid, String, bool)> = display
@@ -261,87 +262,99 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     let active = app.selected_defect();
     let delete_fill = egui::Color32::from_rgb(200, 90, 70);
     let params_open = state.params_open;
+    let mut hovered = None;
 
     for (id, name, enabled) in &entries {
-        ui.horizontal(|ui| {
-            let mut on = *enabled;
-            if ui.checkbox(&mut on, "").changed() {
-                if let Some(display) = app.selected_display_mut() {
-                    if let Some(index) = display.defect_index(*id) {
-                        display.defects[index].set_enabled(on);
-                    }
-                }
-                app.mark_changed();
-            }
-            ui.label(name);
+        let params_this = params_open == Some(*id);
+        let moving_this = editing && active == Some(*id);
+        let locate = !params_this && !moving_this;
 
-            let params_this = params_open == Some(*id);
-            let edit = icon_button("Edit").selected(params_this).atom_ui(ui);
-            paint_icon(ui, &edit, BtnIcon::Edit, None);
-            if edit
-                .response
-                .on_hover_text("Show strength, falloff and preview disc colours for this spot")
-                .clicked()
-            {
-                if params_this {
-                    state.params_open = None;
-                    app.set_calibration_disc(None);
-                } else {
-                    if app.is_editing() {
-                        app.set_editing(false);
+        let hit = ui
+            .horizontal(|ui| {
+                let mut on = *enabled;
+                let checkbox = ui.checkbox(&mut on, "");
+                if checkbox.changed() {
+                    if let Some(display) = app.selected_display_mut() {
+                        if let Some(index) = display.defect_index(*id) {
+                            display.defects[index].set_enabled(on);
+                        }
                     }
-                    state.params_open = Some(*id);
-                    app.set_calibration_disc(Some(*id));
+                    app.mark_changed();
                 }
-            }
+                let label = ui.label(name);
 
-            let moving_this = editing && active == Some(*id);
-            let move_btn = icon_button("Move").selected(moving_this).atom_ui(ui);
-            paint_icon(ui, &move_btn, BtnIcon::Move, None);
-            if move_btn
-                .response
-                .on_hover_text(
-                    "Drag this spot on the screen: wheel to resize, Shift+wheel for \
-strength, Esc or a click on empty screen to leave",
-                )
-                .clicked()
-            {
-                if moving_this {
-                    app.set_editing(false);
-                } else {
-                    if state.params_open.is_some() {
+                let edit = icon_button("Edit").selected(params_this).atom_ui(ui);
+                paint_icon(ui, &edit, BtnIcon::Edit, None);
+                let edit_resp = edit.response.on_hover_text(
+                    "Show strength, falloff and preview disc colours for this spot",
+                );
+                if edit_resp.clicked() {
+                    if params_this {
                         state.params_open = None;
                         app.set_calibration_disc(None);
+                    } else {
+                        if app.is_editing() {
+                            app.set_editing(false);
+                        }
+                        state.params_open = Some(*id);
+                        app.set_calibration_disc(Some(*id));
                     }
-                    app.select_defect(Some(*id));
-                    app.set_editing(true);
-                    state.notice(
-                        "The overlay is now interactive: drag the spot onto the blemish, \
+                }
+
+                let move_btn = icon_button("Move").selected(moving_this).atom_ui(ui);
+                paint_icon(ui, &move_btn, BtnIcon::Move, None);
+                let move_resp = move_btn.response.on_hover_text(
+                    "Drag this spot on the screen: wheel to resize, Shift+wheel for \
+strength, Esc or a click on empty screen to leave",
+                );
+                if move_resp.clicked() {
+                    if moving_this {
+                        app.set_editing(false);
+                    } else {
+                        if state.params_open.is_some() {
+                            state.params_open = None;
+                            app.set_calibration_disc(None);
+                        }
+                        app.select_defect(Some(*id));
+                        app.set_editing(true);
+                        state.notice(
+                            "The overlay is now interactive: drag the spot onto the blemish, \
 wheel to resize, Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave. \
 The correction is not drawn while moving; it comes back when you leave.",
-                    );
+                        );
+                    }
                 }
-            }
 
-            let clone = icon_button("Clone").atom_ui(ui);
-            paint_icon(ui, &clone, BtnIcon::Clone, None);
-            if clone
-                .response
-                .on_hover_text("Copy this spot, offset so both stay reachable")
-                .clicked()
-            {
-                app.clone_defect(*id);
-                state.notice("Cloned the spot beside the original.");
-            }
+                let clone = icon_button("Clone").atom_ui(ui);
+                paint_icon(ui, &clone, BtnIcon::Clone, None);
+                let clone_resp = clone
+                    .response
+                    .on_hover_text("Copy this spot, offset so both stay reachable");
+                if clone_resp.clicked() {
+                    app.clone_defect(*id);
+                    state.notice("Cloned the spot beside the original.");
+                }
 
-            let delete = icon_button(RichText::new("Delete").color(egui::Color32::WHITE))
-                .fill(delete_fill)
-                .atom_ui(ui);
-            paint_icon(ui, &delete, BtnIcon::Delete, Some(egui::Color32::WHITE));
-            if delete.response.clicked() {
-                state.confirm_delete = Some(*id);
-            }
-        });
+                let delete = icon_button(RichText::new("Delete").color(egui::Color32::WHITE))
+                    .fill(delete_fill)
+                    .atom_ui(ui);
+                paint_icon(ui, &delete, BtnIcon::Delete, Some(egui::Color32::WHITE));
+                if delete.response.clicked() {
+                    state.confirm_delete = Some(*id);
+                }
+
+                checkbox
+                    .union(label)
+                    .union(edit_resp)
+                    .union(move_resp)
+                    .union(clone_resp)
+                    .union(delete.response)
+            })
+            .inner;
+
+        if locate && hit.hovered() {
+            hovered = Some(*id);
+        }
 
         let moving_this = app.is_editing() && app.selected_defect() == Some(*id);
         let params_this = state.params_open == Some(*id);
@@ -367,6 +380,8 @@ The correction is not drawn while moving; it comes back when you leave.",
             }
         }
     }
+
+    app.set_hovered_defect(hovered);
 
     ui.add_space(4.0);
     let add = icon_button("Add spot").atom_ui(ui);

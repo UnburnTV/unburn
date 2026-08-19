@@ -209,17 +209,15 @@ fn run(
 
         pending.clear();
         let animating = reconciler.desired().calibration_disc.is_some();
-        if animating {
-            // The editor disc keeps spinning without a DesiredState change, so
-            // present again even when the reconciler had nothing to do.
-            if let Err(error) = backend.flush() {
-                error!(%error, "could not present the editor disc");
-                events
-                    .send(BackendEvent::Disconnected(error.to_string()))
-                    .ok();
-                notify();
-                break;
-            }
+        // Present even when DesiredState did not change: pointer motion can
+        // dirty a handle hover without producing an editor action.
+        if let Err(error) = backend.flush() {
+            error!(%error, "could not present the overlays");
+            events
+                .send(BackendEvent::Disconnected(error.to_string()))
+                .ok();
+            notify();
+            break;
         }
 
         // The timeout is only a safety net; everything interesting arrives
