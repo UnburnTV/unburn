@@ -530,14 +530,18 @@ The currently selected defect gets a visible outline.
 
 Other defects are optionally outlined faintly.
 
-The actual compensation remains visible while editing.
+The compensation itself is not drawn while editing. A drag or a wheel notch
+changes the geometry many times a second, and each change means a new mask
+generated and resampled over every pixel of the screen, which is far more work
+than there is time for; the outlines are what the eye is aiming with anyway. The
+correction returns the moment editing ends, without recomputing anything if the
+geometry came back to where it started.
 
 A modifier or GUI toggle should allow:
 
 ```text
+Show outlines
 Show model
-Show correction
-Show both
 ```
 
 Normal mode returns the surface to completely click-through behavior.

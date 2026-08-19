@@ -77,7 +77,7 @@ Run `unburn` with no arguments to get the calibration window.
 6. For a panel with several similar blemishes, select one and press **Clone
    spot**. The copy keeps the shape, strength and colour, and lands beside the
    original so both stay reachable; drag it onto the next blemish.
-7. Switch the on-screen display between *Correction*, *Model* and *Outline* to
+7. Switch the on-screen display between *Show outlines* and *Show model* to
    check that the modelled defect matches the real one before you trust the
    correction.
 8. Press `Space` at any time for an instant before/after. The overlay is

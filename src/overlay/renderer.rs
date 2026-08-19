@@ -141,10 +141,7 @@ impl CpuMaskRenderer {
     }
 
     fn show_mode(&self) -> ShowMode {
-        self.editor
-            .as_ref()
-            .map(|e| e.show)
-            .unwrap_or(ShowMode::Correction)
+        self.editor.as_ref().map(|e| e.show).unwrap_or_default()
     }
 
     /// Opaque rotating disc behind the selected spot. Returns whether the
@@ -251,17 +248,17 @@ impl CpuMaskRenderer {
                 Rgba::UNSELECTED
             };
 
+            // Nothing marks the centre: it sits exactly where the blemish
+            // being matched is, and a mark there hides what the contours are
+            // being lined up against.
             self.stroke_ellipse(defect, 1.0, colour, if selected { 3 } else { 2 });
             if selected {
                 // A faint outer ring marks where the Gaussian has essentially
                 // died out, which is what the eye is actually matching.
                 self.stroke_ellipse(defect, 2.0, Rgba(80, 220, 255, 70), 1);
-                self.draw_crosshair(defect.center, 14, 3, colour);
                 for handle in defect.handles() {
                     self.fill_square(handle, 5, colour);
                 }
-            } else {
-                self.draw_crosshair(defect.center, 7, 1, colour);
             }
         }
 
@@ -301,19 +298,6 @@ impl CpuMaskRenderer {
             }
             previous = Some(point);
         }
-    }
-
-    fn draw_crosshair(
-        &mut self,
-        center: crate::compensation::Vec2,
-        arm: i32,
-        thickness: i32,
-        colour: Rgba,
-    ) {
-        let cx = (center.x * self.width as f32).round() as i32;
-        let cy = (center.y * self.height as f32).round() as i32;
-        self.draw_line((cx - arm, cy), (cx + arm, cy), colour, thickness);
-        self.draw_line((cx, cy - arm), (cx, cy + arm), colour, thickness);
     }
 
     fn fill_square(&mut self, center: crate::compensation::Vec2, half: i32, colour: Rgba) {
@@ -411,7 +395,11 @@ impl MaskRenderer for CpuMaskRenderer {
     fn render(&mut self) {
         let show = self.show_mode();
 
-        if show.draws_correction() {
+        // The compensation is drawn only when nobody is editing on this
+        // surface. Resampling the mask over every pixel is by far the most
+        // expensive thing here and there is no way to make it cheap enough to
+        // follow a pointer, so editing draws the outlines and nothing else.
+        if self.editor.is_none() {
             let (w, h) = (self.width, self.height);
             let dither = self.dither;
             let mask = std::mem::replace(&mut self.mask, Mask::transparent(2, 2));
@@ -571,11 +559,9 @@ mod tests {
     }
 
     #[test]
-    fn editor_outlines_are_drawn_over_the_mask() {
-        let mut renderer = CpuMaskRenderer::new(64, 64, false);
-        renderer.upload_mask(&spot_mask());
+    fn editing_draws_the_outlines_and_not_the_correction() {
         let id = Uuid::new_v4();
-        renderer.set_editor(Some(EditorView {
+        let editor = EditorView {
             defects: vec![EditorDefect {
                 id,
                 center: Vec2::splat(0.5),
@@ -585,20 +571,41 @@ mod tests {
                 enabled: true,
             }],
             selected: Some(id),
-            show: ShowMode::Correction,
-        }));
+            show: ShowMode::Outlines,
+        };
+
+        // A 25 px spot in the middle of a 256 px surface.
+        let mut renderer = CpuMaskRenderer::new(256, 256, false);
+        renderer.upload_mask(&spot_mask());
+        renderer.set_editor(Some(editor));
         renderer.render();
 
-        // The crosshair sits on the defect centre, which the mask left black.
-        let center = pixel(&renderer, 32, 32);
+        // On the contour at 45 degrees, clear of the axis-aligned handles.
+        let on_contour = 128 + (0.1 * 256.0 * std::f32::consts::FRAC_1_SQRT_2) as u32;
         assert!(
-            center[0] > 0 || center[1] > 0 || center[2] > 0,
-            "outline must be coloured"
+            alpha_at(&renderer, on_contour, on_contour) > 0,
+            "the outline must be drawn"
+        );
+        // Inside the contour the correction would be near its deepest, and
+        // there is nothing else drawn in there.
+        assert_eq!(
+            alpha_at(&renderer, 138, 138),
+            0,
+            "the correction must not be drawn while editing"
+        );
+
+        // Leaving brings it back from the mask that was uploaded all along,
+        // with nothing to regenerate.
+        renderer.set_editor(None);
+        renderer.render();
+        assert!(
+            alpha_at(&renderer, 138, 138) > 0,
+            "the correction must come back"
         );
     }
 
     #[test]
-    fn model_mode_hides_the_correction() {
+    fn model_mode_tints_the_defect_field() {
         let model = Mask {
             width: 4,
             height: 4,
@@ -640,7 +647,7 @@ mod tests {
                 enabled: true,
             }],
             selected: Some(id),
-            show: ShowMode::Correction,
+            show: ShowMode::Outlines,
         }));
         renderer.render();
         assert_ne!(renderer.framebuffer(), plain.as_slice());

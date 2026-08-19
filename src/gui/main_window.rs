@@ -317,7 +317,8 @@ strength, Esc or a click on empty screen to leave",
                     app.set_editing(true);
                     state.notice(
                         "The overlay is now interactive: drag the spot onto the blemish, \
-wheel to resize, Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave.",
+wheel to resize, Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave. \
+The correction is not drawn while moving; it comes back when you leave.",
                     );
                 }
             }

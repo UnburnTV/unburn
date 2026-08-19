@@ -14,42 +14,40 @@ pub use renderer::{CpuMaskRenderer, MaskRenderer};
 pub use window::{transform_defect, OverlaySurface};
 
 /// What the overlay draws while the user is editing on screen.
+///
+/// The compensation is not one of the choices. Regenerating the mask and
+/// resampling it over the surface takes far longer than a drag or a wheel notch
+/// leaves between events, so on-screen editing shows the geometry and leaves
+/// the correction to reappear the moment editing ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShowMode {
-    /// Only the compensation itself, exactly as in normal operation.
+    /// Just the outlines, over an otherwise untouched desktop.
     #[default]
-    Correction,
-    /// The modelled defect field, so its shape can be compared with the panel.
+    Outlines,
+    /// The modelled defect field as well, so its shape can be compared with
+    /// the blemish underneath it.
     Model,
-    /// The compensation with the model drawn faintly on top.
-    Both,
 }
 
 impl ShowMode {
-    pub const ALL: [ShowMode; 3] = [ShowMode::Correction, ShowMode::Model, ShowMode::Both];
+    pub const ALL: [ShowMode; 2] = [ShowMode::Outlines, ShowMode::Model];
 
     pub fn label(self) -> &'static str {
         match self {
-            ShowMode::Correction => "Show correction",
+            ShowMode::Outlines => "Show outlines",
             ShowMode::Model => "Show model",
-            ShowMode::Both => "Show both",
         }
     }
 
     pub fn next(self) -> ShowMode {
         match self {
-            ShowMode::Correction => ShowMode::Model,
-            ShowMode::Model => ShowMode::Both,
-            ShowMode::Both => ShowMode::Correction,
+            ShowMode::Outlines => ShowMode::Model,
+            ShowMode::Model => ShowMode::Outlines,
         }
     }
 
-    pub fn draws_correction(self) -> bool {
-        matches!(self, ShowMode::Correction | ShowMode::Both)
-    }
-
     pub fn draws_model(self) -> bool {
-        matches!(self, ShowMode::Model | ShowMode::Both)
+        matches!(self, ShowMode::Model)
     }
 }
 

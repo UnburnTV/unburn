@@ -246,7 +246,7 @@ impl DesiredState {
     }
 }
 
-/// What one overlay's mask was last generated from.
+/// What one overlay's sampled fields were last generated from.
 #[derive(Debug, Clone, PartialEq)]
 struct MaskKey {
     defects: Vec<Defect>,
@@ -254,12 +254,15 @@ struct MaskKey {
     width: u32,
     height: u32,
     transform: crate::display::Transform,
-    model: bool,
 }
 
 struct Live {
     overlay: OverlayId,
-    key: Option<MaskKey>,
+    /// What the compensation the overlay is holding was generated from. Left
+    /// where it is while the editor is up, since nothing is drawing it.
+    mask: Option<MaskKey>,
+    /// The same for the modelled defect field, which only the editor asks for.
+    model: Option<MaskKey>,
 }
 
 /// Drives a backend towards a [`DesiredState`].
@@ -348,7 +351,14 @@ impl Reconciler {
                 Some(live) => live,
                 None => {
                     let overlay = backend.create_overlay(output.id)?;
-                    self.live.insert(output.id, Live { overlay, key: None });
+                    self.live.insert(
+                        output.id,
+                        Live {
+                            overlay,
+                            mask: None,
+                            model: None,
+                        },
+                    );
                     self.live.get_mut(&output.id).expect("just inserted")
                 }
             };
@@ -363,34 +373,49 @@ impl Reconciler {
                 width: output.width,
                 height: output.height,
                 transform: output.transform,
-                model: editing.is_some() && show.draws_model(),
             };
 
-            if live.key.as_ref() != Some(&key) {
+            // Nothing draws the compensation while the editor is up, so
+            // nothing generates it either: a pointer produces edits far faster
+            // than a mask can be built and resampled, and every one of them
+            // would be thrown away undrawn. The one the overlay is already
+            // holding stays there, which is what makes leaving the editor
+            // instant when the geometry came back to where it started.
+            let stale_mask = editing.is_none() && live.mask.as_ref() != Some(&key);
+            let stale_model = show.draws_model() && live.model.as_ref() != Some(&key);
+
+            if stale_mask || stale_model {
                 let surface_defects: Vec<Defect> = settings
                     .defects
                     .iter()
                     .map(|d| crate::overlay::transform_defect(d, output.transform))
                     .collect();
 
-                let mask = mask::generate(
-                    &surface_defects,
-                    &settings.params,
-                    output.width,
-                    output.height,
-                );
-                backend.update_mask(overlay, &mask);
+                if stale_mask {
+                    let mask = mask::generate(
+                        &surface_defects,
+                        &settings.params,
+                        output.width,
+                        output.height,
+                    );
+                    backend.update_mask(overlay, &mask);
+                    live.mask = Some(key.clone());
+                }
 
-                let model = key.model.then(|| {
+                if stale_model {
                     let (w, h) = settings
                         .params
                         .quality
                         .resolution_for(output.width, output.height);
-                    mask::generate_model_field(&surface_defects, w, h)
-                });
-                backend.set_model(overlay, model);
+                    let model = mask::generate_model_field(&surface_defects, w, h);
+                    backend.set_model(overlay, Some(model));
+                    live.model = Some(key);
+                }
+            }
 
-                live.key = Some(key);
+            if !show.draws_model() && live.model.is_some() {
+                backend.set_model(overlay, None);
+                live.model = None;
             }
 
             backend.set_dither(overlay, settings.params.dither);
@@ -783,7 +808,7 @@ mod tests {
             editing: Some(EditingState {
                 identity: identity("HDMI-A-1"),
                 selected: None,
-                show: ShowMode::Correction,
+                show: ShowMode::Outlines,
             }),
             ..Default::default()
         });

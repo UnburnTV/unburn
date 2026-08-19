@@ -1089,16 +1089,12 @@ impl PointerHandler for State {
                     0x111 => overlay.interaction.press(uv, Button::Secondary),
                     _ => None,
                 },
-                PointerEventKind::Release { .. } => {
+                PointerEventKind::Release { .. } | PointerEventKind::Leave { .. } => {
                     overlay.interaction.release();
                     None
                 }
                 PointerEventKind::Motion { .. } | PointerEventKind::Enter { .. } => {
                     overlay.interaction.motion(uv)
-                }
-                PointerEventKind::Leave { .. } => {
-                    overlay.interaction.release();
-                    None
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     // Scroll down is positive in the protocol, but scrolling up

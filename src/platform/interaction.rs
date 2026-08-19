@@ -314,7 +314,7 @@ mod tests {
             EditorView {
                 defects: vec![defect],
                 selected: Some(id),
-                show: ShowMode::Correction,
+                show: ShowMode::Outlines,
             },
         )
     }
@@ -386,7 +386,7 @@ mod tests {
                 ..stale.defects[0]
             }],
             selected: Some(id),
-            show: ShowMode::Correction,
+            show: ShowMode::Outlines,
         };
         editor.set_view(stale, Transform::Normal);
 

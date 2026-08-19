@@ -85,7 +85,7 @@ impl App {
             editing: false,
             calibration_disc: None,
             disc_colors: DiscSwatch::default_colors(),
-            show_mode: ShowMode::Correction,
+            show_mode: ShowMode::default(),
             test_pattern: args
                 .test_pattern
                 .as_deref()
