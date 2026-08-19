@@ -1,11 +1,11 @@
 //! The calibration window's layout.
 
-use egui::{RichText, Slider};
+use egui::{pos2, RichText, Slider, StrokeKind, Vec2};
 use uuid::Uuid;
 
 use crate::{
     app::App,
-    compensation::{MaskQuality, Rgb},
+    compensation::{MaskQuality, RadialDefect, Rgb},
     config,
     display::DisplayIdentity,
     overlay::ShowMode,
@@ -18,6 +18,13 @@ const SLIDER_LABEL_ROOM: f32 = 230.0;
 
 /// Smallest strength the slider resolves, in percent.
 const STRENGTH_FLOOR: f64 = 0.5;
+
+/// Slot reserved for a stroked glyph on the spot-list buttons.
+const ICON_ATOM: &str = "spot_btn_icon";
+const ICON_SIZE: f32 = 26.0;
+
+/// How much larger the defect-list controls are than the rest of the window.
+const DEFECT_CONTROL_SCALE: f32 = 2.0;
 
 /// A strength slider, in percent.
 ///
@@ -41,11 +48,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
 
         display_picker(ui, app);
         ui.separator();
-        global_sliders(ui, app);
-        ui.separator();
         defect_list(ui, app, state);
-        ui.separator();
-        selected_defect(ui, app, state);
         ui.separator();
         summary(ui, app);
         ui.separator();
@@ -93,63 +96,30 @@ fn display_picker(ui: &mut egui::Ui, app: &mut App) {
             ui.label(RichText::new("not connected").weak());
         }
     });
-
-    let Some(display) = app.selected_display() else {
-        return;
-    };
-    let mut enabled = display.enabled;
-    let mut name = display.name.clone();
-
-    ui.horizontal(|ui| {
-        if ui
-            .checkbox(&mut enabled, "Compensate this display")
-            .changed()
-        {
-            if let Some(display) = app.selected_display_mut() {
-                display.enabled = enabled;
-            }
-            app.mark_changed();
-        }
-        ui.add_space(8.0);
-        ui.label("Name:");
-        if ui.text_edit_singleline(&mut name).changed() {
-            if let Some(display) = app.selected_display_mut() {
-                display.name = name;
-            }
-            app.mark_changed();
-        }
-    });
-}
-
-fn global_sliders(ui: &mut egui::Ui, app: &mut App) {
-    let Some(display) = app.selected_display() else {
-        return;
-    };
-    let mut compensation = display.compensation * 100.0;
-
-    let response = ui.add(
-        Slider::new(&mut compensation, 0.0..=100.0)
-            .text("Compensation")
-            .suffix(" %")
-            .fixed_decimals(0),
-    );
-    if response.changed() {
-        if let Some(display) = app.selected_display_mut() {
-            display.compensation = compensation / 100.0;
-        }
-        app.mark_changed();
-    }
-    ui.label(
-        RichText::new(
-            "At 100% the panel is brought all the way down to its dimmest modelled point.",
-        )
-        .small()
-        .weak(),
-    );
 }
 
 fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
-    ui.heading("Defects");
+    ui.scope(|ui| {
+        enlarge_defect_controls(ui);
+        defect_list_inner(ui, app, state);
+    });
+}
+
+fn enlarge_defect_controls(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+    style.spacing.interact_size *= DEFECT_CONTROL_SCALE;
+    style.spacing.button_padding *= DEFECT_CONTROL_SCALE;
+    style.spacing.icon_width *= DEFECT_CONTROL_SCALE;
+    style.spacing.icon_width_inner *= DEFECT_CONTROL_SCALE;
+    style.spacing.icon_spacing *= DEFECT_CONTROL_SCALE;
+    style.spacing.item_spacing *= DEFECT_CONTROL_SCALE;
+    for font in style.text_styles.values_mut() {
+        font.size *= DEFECT_CONTROL_SCALE;
+    }
+}
+
+fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
+    ui.heading("Compensated Defects");
 
     let Some(display) = app.selected_display() else {
         ui.label("Select a display first.");
@@ -167,80 +137,109 @@ fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
             )
         })
         .collect();
-    let selected = app.selected_defect();
 
     if entries.is_empty() {
         ui.label(RichText::new("None yet. Add a spot over each blemish.").weak());
     }
 
-    egui::ScrollArea::vertical()
-        .max_height(160.0)
-        .id_salt("defects")
-        .show(ui, |ui| {
-            for (id, name, enabled) in &entries {
-                ui.horizontal(|ui| {
-                    let mut on = *enabled;
-                    if ui.checkbox(&mut on, "").changed() {
-                        if let Some(display) = app.selected_display_mut() {
-                            if let Some(index) = display.defect_index(*id) {
-                                display.defects[index].set_enabled(on);
-                            }
-                        }
-                        app.mark_changed();
+    let editing = app.is_editing();
+    let active = app.selected_defect();
+    let delete_fill = egui::Color32::from_rgb(200, 90, 70);
+    let params_open = state.params_open;
+
+    for (id, name, enabled) in &entries {
+        ui.horizontal(|ui| {
+            let mut on = *enabled;
+            if ui.checkbox(&mut on, "").changed() {
+                if let Some(display) = app.selected_display_mut() {
+                    if let Some(index) = display.defect_index(*id) {
+                        display.defects[index].set_enabled(on);
                     }
-                    if ui.selectable_label(selected == Some(*id), name).clicked() {
-                        app.select_defect(Some(*id));
-                    }
-                });
+                }
+                app.mark_changed();
+            }
+            ui.label(name);
+
+            let params_this = params_open == Some(*id);
+            let edit = icon_button("Edit").selected(params_this).atom_ui(ui);
+            paint_spot_icon(ui, &edit, SpotIcon::Edit, None);
+            if edit
+                .response
+                .on_hover_text("Show strength, falloff and rotation for this spot")
+                .clicked()
+            {
+                state.params_open = if params_this { None } else { Some(*id) };
+            }
+
+            let moving_this = editing && active == Some(*id);
+            let move_btn = icon_button("Move").selected(moving_this).atom_ui(ui);
+            paint_spot_icon(ui, &move_btn, SpotIcon::Move, None);
+            if move_btn
+                .response
+                .on_hover_text(
+                    "Drag this spot on the screen: wheel to resize, Shift+wheel for \
+strength, Esc or a click on empty screen to leave",
+                )
+                .clicked()
+            {
+                if moving_this {
+                    app.set_editing(false);
+                } else {
+                    app.select_defect(Some(*id));
+                    app.set_editing(true);
+                    state.notice(
+                        "The overlay is now interactive: drag the spot onto the blemish, \
+wheel to resize, Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave.",
+                    );
+                }
+            }
+
+            let clone = icon_button("Clone").atom_ui(ui);
+            paint_spot_icon(ui, &clone, SpotIcon::Clone, None);
+            if clone
+                .response
+                .on_hover_text("Copy this spot, offset so both stay reachable")
+                .clicked()
+            {
+                app.clone_defect(*id);
+                state.notice("Cloned the spot beside the original.");
+            }
+
+            let delete = icon_button(RichText::new("Delete").color(egui::Color32::WHITE))
+                .fill(delete_fill)
+                .atom_ui(ui);
+            paint_spot_icon(ui, &delete, SpotIcon::Delete, Some(egui::Color32::WHITE));
+            if delete.response.clicked() {
+                if state.params_open == Some(*id) {
+                    state.params_open = None;
+                }
+                app.delete_defect(*id);
             }
         });
 
+        if state.params_open == Some(*id) {
+            if let Some(radial) = app
+                .selected_display()
+                .and_then(|d| d.defects.iter().find(|d| d.id() == *id))
+                .and_then(|d| d.as_radial())
+                .cloned()
+            {
+                ui.indent(*id, |ui| {
+                    ui.group(|ui| {
+                        spot_params(ui, app, state, *id, radial);
+                    });
+                });
+            }
+        }
+    }
+
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        if ui.button("+ Add spot").clicked() {
-            app.add_defect(crate::compensation::Vec2::splat(0.5));
-            state.notice(
-                "Added a spot in the centre. Press Edit on screen to drag it onto the blemish.",
-            );
-        }
-
-        if ui
-            .add_enabled(selected.is_some(), egui::Button::new("Clone spot"))
-            .on_hover_text("Copy the selected spot, offset so both stay reachable")
-            .clicked()
-        {
-            if let Some(id) = selected {
-                app.clone_defect(id);
-                state.notice("Cloned the spot beside the original, and selected the copy.");
-            }
-        }
-
-        let editing = app.is_editing();
-        let label = if editing {
-            "Stop editing on screen"
-        } else {
-            "Edit on screen"
-        };
-        if ui.button(label).clicked() {
-            app.set_editing(!editing);
-            if !editing {
-                state.notice(
-                    "The overlay is now interactive: drag a spot to move it, wheel to resize, \
-Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave.",
-                );
-            }
-        }
-
-        let can_delete = selected.is_some();
-        if ui
-            .add_enabled(can_delete, egui::Button::new("Delete"))
-            .clicked()
-        {
-            if let Some(id) = selected {
-                app.delete_defect(id);
-            }
-        }
-    });
+    let add = icon_button("Add spot").atom_ui(ui);
+    paint_spot_icon(ui, &add, SpotIcon::Add, None);
+    if add.response.clicked() {
+        app.add_defect(crate::compensation::Vec2::splat(0.5));
+        state.notice("Added a spot in the centre. Press Move to drag it onto the blemish.");
+    }
 
     if app.is_editing() {
         ui.horizontal(|ui| {
@@ -257,31 +256,13 @@ Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to le
     }
 }
 
-fn selected_defect(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
-    ui.heading("Selected spot");
-
-    let Some(id) = app.selected_defect() else {
-        ui.label(RichText::new("Nothing selected.").weak());
-        return;
-    };
-    let Some(radial) = app
-        .selected_display()
-        .and_then(|d| d.defects.iter().find(|x| x.id() == id))
-        .and_then(|d| d.as_radial())
-        .cloned()
-    else {
-        ui.label(RichText::new("Nothing selected.").weak());
-        return;
-    };
-
-    if !app.is_editing() {
-        ui.label(
-            RichText::new("Position and size are set on the screen itself: press Edit on screen.")
-                .small()
-                .weak(),
-        );
-    }
-
+fn spot_params(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    state: &mut UiState,
+    id: Uuid,
+    radial: RadialDefect,
+) {
     strength_sliders(ui, app, state, id, radial.strength);
 
     let mut falloff = radial.falloff;
@@ -468,16 +449,6 @@ fn summary(ui: &mut egui::Ui, app: &App) {
     let params = display.mask_params();
     let mask = crate::compensation::mask::generate_at(&display.defects, &params, 160, 90);
 
-    let spread = mask
-        .max_gain
-        .zip(mask.min_gain, |hi, lo| hi - lo)
-        .max_channel()
-        * 100.0;
-    let loss = mask.peak_alpha() * 100.0;
-
-    ui.label(format!("Modelled unevenness:   {spread:.1}%"));
-    ui.label(format!("Largest light removed: {loss:.1}%"));
-
     let lift = mask.black_lift() * 100.0;
     if lift > 0.05 {
         ui.label(format!("Black lifted by:       {lift:.1}%"))
@@ -493,4 +464,168 @@ faint constant glow. This figure is the worst case, reached only on a fully blac
     if app.is_bypassed() {
         ui.label(RichText::new("Compensation is currently bypassed.").small());
     }
+}
+
+#[derive(Clone, Copy)]
+enum SpotIcon {
+    Edit,
+    Move,
+    Clone,
+    Delete,
+    Add,
+}
+
+fn icon_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
+    egui::Button::new((
+        egui::Atom::custom(egui::Id::new(ICON_ATOM), Vec2::splat(ICON_SIZE)),
+        text.into(),
+    ))
+}
+
+fn paint_spot_icon(
+    ui: &egui::Ui,
+    laid_out: &egui::AtomLayoutResponse,
+    icon: SpotIcon,
+    color: Option<egui::Color32>,
+) {
+    let Some(rect) = laid_out.rect(egui::Id::new(ICON_ATOM)) else {
+        return;
+    };
+    let color = color.unwrap_or_else(|| ui.style().interact(&laid_out.response).text_color());
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(rect.width() * 0.104, color);
+    let r = rect.shrink(rect.width() * 0.096);
+
+    match icon {
+        SpotIcon::Edit => paint_edit(painter, r, stroke, color),
+        SpotIcon::Move => paint_move(painter, r, stroke),
+        SpotIcon::Clone => paint_clone(painter, r, stroke),
+        SpotIcon::Delete => paint_delete(painter, r, stroke),
+        SpotIcon::Add => paint_add(painter, r, stroke),
+    }
+}
+
+fn paint_edit(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke, color: egui::Color32) {
+    let dir = Vec2::new(1.0, -1.0).normalized();
+    let perp = Vec2::new(dir.y, -dir.x);
+    let c = r.center();
+    let half = r.width() * 0.38;
+    let tip_len = r.width() * 0.305;
+    let half_w = r.width() * 0.162;
+    let eraser = c - dir * half;
+    let neck = c + dir * (half - tip_len);
+    let tip = c + dir * half;
+    painter.add(egui::Shape::closed_line(
+        vec![
+            eraser + perp * half_w,
+            neck + perp * half_w,
+            tip,
+            neck - perp * half_w,
+            eraser - perp * half_w,
+        ],
+        stroke,
+    ));
+    painter.line_segment([eraser + perp * half_w, eraser - perp * half_w], stroke);
+    painter.circle_filled(tip, r.width() * 0.057, color);
+}
+
+fn paint_move(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let c = r.center();
+    let arm = r.width() * 0.38;
+    let head = r.width() * 0.16;
+    painter.line_segment([pos2(c.x, c.y - arm), pos2(c.x, c.y + arm)], stroke);
+    painter.line_segment([pos2(c.x - arm, c.y), pos2(c.x + arm, c.y)], stroke);
+    painter.line_segment(
+        [pos2(c.x, c.y - arm), pos2(c.x - head, c.y - arm + head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x, c.y - arm), pos2(c.x + head, c.y - arm + head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x, c.y + arm), pos2(c.x - head, c.y + arm - head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x, c.y + arm), pos2(c.x + head, c.y + arm - head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x - arm, c.y), pos2(c.x - arm + head, c.y - head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x - arm, c.y), pos2(c.x - arm + head, c.y + head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x + arm, c.y), pos2(c.x + arm - head, c.y - head)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(c.x + arm, c.y), pos2(c.x + arm - head, c.y + head)],
+        stroke,
+    );
+}
+
+fn paint_clone(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let shift = r.width() * 0.333;
+    let back = egui::Rect::from_min_max(
+        pos2(r.left(), r.top()),
+        pos2(r.right() - shift, r.bottom() - shift),
+    );
+    let front = egui::Rect::from_min_max(
+        pos2(r.left() + shift, r.top() + shift),
+        pos2(r.right(), r.bottom()),
+    );
+    let radius = r.width() * 0.095;
+    painter.rect_stroke(back, radius, stroke, StrokeKind::Middle);
+    painter.rect_stroke(front, radius, stroke, StrokeKind::Middle);
+}
+
+fn paint_delete(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let w = r.width();
+    let lid_y = r.top() + w * 0.343;
+    let body = egui::Rect::from_min_max(
+        pos2(r.left() + w * 0.171, lid_y),
+        pos2(r.right() - w * 0.171, r.bottom() - w * 0.038),
+    );
+    painter.rect_stroke(body, w * 0.114, stroke, StrokeKind::Middle);
+    painter.line_segment(
+        [
+            pos2(r.left() + w * 0.057, lid_y),
+            pos2(r.right() - w * 0.057, lid_y),
+        ],
+        stroke,
+    );
+    let handle_y = r.top() + w * 0.133;
+    let handle_w = w * 0.190;
+    let cx = r.center().x;
+    painter.line_segment(
+        [pos2(cx - handle_w, handle_y), pos2(cx + handle_w, handle_y)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(cx - handle_w, handle_y), pos2(cx - handle_w, lid_y)],
+        stroke,
+    );
+    painter.line_segment(
+        [pos2(cx + handle_w, handle_y), pos2(cx + handle_w, lid_y)],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            pos2(cx, body.top() + w * 0.210),
+            pos2(cx, body.bottom() - w * 0.152),
+        ],
+        stroke,
+    );
+}
+
+fn paint_add(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
+    let c = r.center();
+    let arm = r.width() * 0.32;
+    painter.line_segment([pos2(c.x - arm, c.y), pos2(c.x + arm, c.y)], stroke);
+    painter.line_segment([pos2(c.x, c.y - arm), pos2(c.x, c.y + arm)], stroke);
 }

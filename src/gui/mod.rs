@@ -29,6 +29,8 @@ pub struct UiState {
     pub last_cycle: Option<Instant>,
     /// Show one strength slider per colour channel, even for a neutral spot.
     pub separate_channels: bool,
+    /// Which spot's strength/falloff/rotation group is expanded.
+    pub params_open: Option<uuid::Uuid>,
 }
 
 impl UiState {
