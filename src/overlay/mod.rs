@@ -6,7 +6,7 @@ pub mod window;
 use uuid::Uuid;
 
 use crate::{
-    compensation::{Defect, Rgb, Vec2},
+    compensation::{Defect, Vec2},
     display::Transform,
 };
 
@@ -135,7 +135,6 @@ pub struct EditorDefect {
     pub center: Vec2,
     pub radius: Vec2,
     pub rotation: f32,
-    pub strength: Rgb,
     pub enabled: bool,
 }
 
@@ -151,7 +150,6 @@ impl EditorDefect {
             center: transform.panel_to_surface(radial.center),
             radius: radial.radius,
             rotation: mapped.y.atan2(mapped.x),
-            strength: radial.strength,
             enabled: radial.enabled,
         })
     }
@@ -350,7 +348,6 @@ mod tests {
             center,
             radius,
             rotation: 0.0,
-            strength: Rgb::splat(0.1),
             enabled: true,
         }
     }

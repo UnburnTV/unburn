@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::compensation::{mask, Mask};
 
-use super::{CalibrationDisc, EditorView, ShowMode};
+use super::{CalibrationDisc, EditorView};
 
 /// Process-local clock so the disc's angle does not lose precision the way a
 /// unix timestamp converted to `f32` would.
@@ -138,10 +138,6 @@ impl CpuMaskRenderer {
         }
         self.render();
         Some(&self.framebuffer)
-    }
-
-    fn show_mode(&self) -> ShowMode {
-        self.editor.as_ref().map(|e| e.show).unwrap_or_default()
     }
 
     /// Opaque rotating disc behind the selected spot. Returns whether the
@@ -393,26 +389,26 @@ impl MaskRenderer for CpuMaskRenderer {
     }
 
     fn render(&mut self) {
-        let show = self.show_mode();
-
         // The compensation is drawn only when nobody is editing on this
         // surface. Resampling the mask over every pixel is by far the most
         // expensive thing here and there is no way to make it cheap enough to
         // follow a pointer, so editing draws the outlines and nothing else.
-        if self.editor.is_none() {
-            let (w, h) = (self.width, self.height);
-            let dither = self.dither;
-            let mask = std::mem::replace(&mut self.mask, Mask::transparent(2, 2));
-            mask::rasterize_argb8888(&mask, &mut self.framebuffer, w, h, dither);
-            self.mask = mask;
-        } else {
-            self.framebuffer.fill(0);
-        }
-
-        if show.draws_model() {
-            if let Some(model) = self.model.take() {
-                self.tint_model(&model);
-                self.model = Some(model);
+        match self.editor.as_ref().map(|editor| editor.show) {
+            None => {
+                let (w, h) = (self.width, self.height);
+                let dither = self.dither;
+                let mask = std::mem::replace(&mut self.mask, Mask::transparent(2, 2));
+                mask::rasterize_argb8888(&mask, &mut self.framebuffer, w, h, dither);
+                self.mask = mask;
+            }
+            Some(show) => {
+                self.framebuffer.fill(0);
+                if show.draws_model() {
+                    if let Some(model) = self.model.take() {
+                        self.tint_model(&model);
+                        self.model = Some(model);
+                    }
+                }
             }
         }
 
@@ -470,7 +466,7 @@ pub fn fill_opaque(buffer: &mut [u8], rgb: [u8; 3]) {
 mod tests {
     use super::*;
     use crate::compensation::{mask::generate_at, Defect, MaskParams, RadialDefect, Rgb, Vec2};
-    use crate::overlay::{CalibrationDisc, EditorDefect};
+    use crate::overlay::{CalibrationDisc, EditorDefect, ShowMode};
     use uuid::Uuid;
 
     fn alpha_at(renderer: &CpuMaskRenderer, x: u32, y: u32) -> u8 {
@@ -567,7 +563,6 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(0.1),
                 rotation: 0.0,
-                strength: Rgb::splat(0.15),
                 enabled: true,
             }],
             selected: Some(id),
@@ -643,7 +638,6 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(0.1),
                 rotation: 0.0,
-                strength: Rgb::splat(0.15),
                 enabled: true,
             }],
             selected: Some(id),
@@ -683,7 +677,6 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(spot_radius),
                 rotation: 0.0,
-                strength: Rgb::splat(0.15),
                 enabled,
             },
             colors,

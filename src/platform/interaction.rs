@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     compensation::Vec2,
     display::Transform,
-    overlay::{EditorView, Grab, ShowMode},
+    overlay::{EditorView, Grab},
 };
 
 /// How close, in normalized units, the pointer must get to grab a handle.
@@ -133,10 +133,6 @@ impl EditorInteraction {
 
     pub fn set_modifiers(&mut self, modifiers: Modifiers) {
         self.modifiers = modifiers;
-    }
-
-    pub fn show_mode(&self) -> ShowMode {
-        self.view.show
     }
 
     pub fn release(&mut self) {
@@ -296,8 +292,7 @@ fn project(delta: Vec2, rotation: f32, across: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compensation::Rgb;
-    use crate::overlay::EditorDefect;
+    use crate::overlay::{EditorDefect, ShowMode};
 
     fn view(center: Vec2, radius: Vec2) -> (Uuid, EditorView) {
         let id = Uuid::new_v4();
@@ -306,7 +301,6 @@ mod tests {
             center,
             radius,
             rotation: 0.0,
-            strength: Rgb::splat(0.1),
             enabled: true,
         };
         (
@@ -496,7 +490,6 @@ mod tests {
             center: Vec2::new(0.8, 0.8),
             radius: Vec2::splat(0.05),
             rotation: 0.0,
-            strength: Rgb::splat(0.1),
             enabled: true,
         });
         view.selected = Some(first);
