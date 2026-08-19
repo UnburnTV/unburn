@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     app::App,
-    compensation::{Composition, MaskQuality, Rgb},
+    compensation::{MaskQuality, Rgb},
     config,
     display::DisplayIdentity,
     overlay::ShowMode,
@@ -126,7 +126,6 @@ fn global_sliders(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
     let mut compensation = display.compensation * 100.0;
-    let mut gamma = display.gamma;
 
     let response = ui.add(
         Slider::new(&mut compensation, 0.0..=100.0)
@@ -147,26 +146,6 @@ fn global_sliders(ui: &mut egui::Ui, app: &mut App) {
         .small()
         .weak(),
     );
-
-    let response = ui.add(
-        Slider::new(&mut gamma, 1.0..=3.2)
-            .text("Gamma")
-            .fixed_decimals(2),
-    );
-    if response.changed() {
-        if let Some(display) = app.selected_display_mut() {
-            display.gamma = gamma;
-        }
-        app.mark_changed();
-    }
-    ui.label(
-        RichText::new(
-            "Calibrate this by eye across several grey levels; it is not a fact \
-about the panel.",
-        )
-        .small()
-        .weak(),
-    );
 }
 
 fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
@@ -176,16 +155,16 @@ fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         ui.label("Select a display first.");
         return;
     };
-    let entries: Vec<(Uuid, String, bool, String)> = display
+    let entries: Vec<(Uuid, String, bool)> = display
         .defects
         .iter()
-        .map(|d| {
-            let name = if d.name().is_empty() {
-                "Spot".to_string()
-            } else {
-                d.name().to_string()
-            };
-            (d.id(), name, d.enabled(), d.kind().label().to_string())
+        .enumerate()
+        .map(|(index, d)| {
+            (
+                d.id(),
+                config::DisplayProfile::defect_label(index),
+                d.enabled(),
+            )
         })
         .collect();
     let selected = app.selected_defect();
@@ -198,7 +177,7 @@ fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         .max_height(160.0)
         .id_salt("defects")
         .show(ui, |ui| {
-            for (id, name, enabled, kind) in &entries {
+            for (id, name, enabled) in &entries {
                 ui.horizontal(|ui| {
                     let mut on = *enabled;
                     if ui.checkbox(&mut on, "").changed() {
@@ -212,7 +191,6 @@ fn defect_list(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
                     if ui.selectable_label(selected == Some(*id), name).clicked() {
                         app.select_defect(Some(*id));
                     }
-                    ui.label(RichText::new(kind).weak().small());
                 });
             }
         });
@@ -446,37 +424,14 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
             return;
         };
         let mut quality = display.quality;
-        let mut composition = display.composition;
         let mut dither = display.dither;
-        let mut reference = display.reference * 100.0;
         let mut changed = false;
-
-        changed |= ui
-            .add(
-                Slider::new(&mut reference, 0.0..=100.0)
-                    .text("Reference level")
-                    .suffix(" %")
-                    .fixed_decimals(0),
-            )
-            .on_hover_text(
-                "The desktop grey level at which a per-channel correction is exact. Set it to \
-whatever you look at most; neutral spots ignore it entirely.",
-            )
-            .changed();
 
         ui.horizontal(|ui| {
             ui.label("Mask quality:");
             for option in MaskQuality::ALL {
                 changed |= ui
                     .selectable_value(&mut quality, option, option.label())
-                    .changed();
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Composition:");
-            for option in Composition::ALL {
-                changed |= ui
-                    .selectable_value(&mut composition, option, option.label())
                     .changed();
             }
         });
@@ -488,9 +443,7 @@ whatever you look at most; neutral spots ignore it entirely.",
         if changed {
             if let Some(display) = app.selected_display_mut() {
                 display.quality = quality;
-                display.composition = composition;
                 display.dither = dither;
-                display.reference = reference / 100.0;
             }
             app.mark_changed();
         }
@@ -530,8 +483,8 @@ fn summary(ui: &mut egui::Ui, app: &App) {
         ui.label(format!("Black lifted by:       {lift:.1}%"))
             .on_hover_text(
                 "The price of per-channel correction: the overlay can only dim every channel by \
-the same factor, so the channels that needed less attenuation get their light back as a \
-constant glow. It cancels out exactly at the reference level.",
+the same factor, so the channels that needed less attenuation get their light handed back as a \
+faint constant glow. This figure is the worst case, reached only on a fully black screen.",
             );
     }
     if let Some(report) = app.active_report() {

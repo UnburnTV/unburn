@@ -296,9 +296,7 @@ impl App {
             .map(|o| o.panel_aspect())
             .unwrap_or(16.0 / 9.0);
         let display = self.selected_display_mut()?;
-        let name = display.next_defect_name();
-        let mut defect = RadialDefect::new_at(clamp_unit(at), aspect);
-        defect.name = name;
+        let defect = RadialDefect::new_at(clamp_unit(at), aspect);
         let id = defect.id;
         display.defects.push(Defect::Radial(defect));
         self.selected_defect = Some(id);
@@ -315,9 +313,9 @@ impl App {
         let index = display.defect_index(id)?;
         let source = display.defects[index].as_radial()?;
 
-        let mut copy = cloned_beside(source);
-        copy.name = display.next_defect_name();
-
+        // Inserted next to its original rather than appended, so the list stays
+        // in the order the spots were reasoned about.
+        let copy = cloned_beside(source);
         let new_id = copy.id;
         display.defects.insert(index + 1, Defect::Radial(copy));
         self.selected_defect = Some(new_id);

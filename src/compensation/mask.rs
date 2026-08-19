@@ -4,20 +4,59 @@
 //! per-channel response `D(x, y)`, pick a target brightness `T ≤ min D`, and
 //! attenuate every pixel by `C = T / D` so the panel ends up uniform at `T`.
 //!
-//! A single alpha-blended surface can only scale every channel by the *same*
-//! factor, because `out = colour + dst · (1 - alpha)` has one slope for all
-//! three. Per-channel correction therefore uses the one degree of freedom that
-//! is genuinely per channel — the surface's own colour — to add back the light
-//! that the shared alpha over-removed. That reconstruction is exact at one
-//! chosen desktop level, [`MaskParams::reference`], and drifts either side of
-//! it; see [`Mask::black_lift`] for the worst case.
+//! # Why the correction has the shape it does
+//!
+//! A compositor blends the overlay as `out_c = colour_c + dst_c · (1 - alpha)`:
+//! one multiplier shared by all three channels, plus three per-channel offsets.
+//! Stacking surfaces does not widen that — composing those maps multiplies the
+//! shared factors and leaves the offsets per channel — so no arrangement of
+//! overlays can reach a genuine per-channel multiply.
+//!
+//! That matters because a shared multiplier scales every channel equally and so
+//! leaves the ratios between them exactly as it found them. Alpha alone can make
+//! a burnt patch dimmer; it can never make it less blue. The only lever that can
+//! move a colour cast is the surface's own colour, used to hand back the light
+//! the shared alpha over-removed.
+//!
+//! Two facts then pin the rest down. The offsets cannot be negative, so alpha has
+//! to satisfy the channel needing the most attenuation; and setting it exactly
+//! there leaves that channel correct at every desktop level for free. What
+//! remains is a single scalar, [`REFERENCE`]: the per-channel error is linear in
+//! desktop brightness, so it crosses zero once, and that scalar decides where.
+//! There is no second degree of freedom to look for.
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    defect::{Composition, Defect, DefectModel},
+    defect::{Defect, DefectModel},
     lerp, Rgb, Vec2,
 };
+
+/// Transfer response assumed when converting a wanted luminance ratio into the
+/// encoded value the compositor will multiply by.
+///
+/// Deliberately not a calibration knob. It only decides how a ratio is spelled
+/// in encoded terms, and being out by a couple of tenths costs far less than the
+/// residual colour cast the overlay cannot remove at all. 2.2 sits close enough
+/// to both sRGB and BT.1886 across the range where defects are visible.
+pub const GAMMA: f32 = 2.2;
+
+/// Desktop level, encoded `0.0..=1.0`, at which per-channel correction is exact.
+///
+/// The colour offsets are constants, while the defect they correct is
+/// proportional to content. So the correction is right at one brightness and
+/// drifts either side: under-corrected above, over-corrected below, and on a
+/// black desktop the offsets show up directly as a faint tinted glow — see
+/// [`Mask::black_lift`].
+///
+/// 0.35 minimises the worst visible error over the whole brightness range under
+/// a `ΔL/√L` sensitivity model, which is how the eye behaves in the dim scenes
+/// where that glow is the risk. The optimum is broad and flat between roughly
+/// 0.20 and 0.45. Weighting purely by nits would prefer 0.85 and wreck dark
+/// scenes; weighting purely by contrast ratio would refuse any offset at all,
+/// and give up colour correction along with it. Irrelevant while every defect is
+/// neutral, which is why a neutral mask stays exactly black.
+pub const REFERENCE: f32 = 0.35;
 
 /// How finely the alpha field is sampled before the GPU or the CPU upsampler
 /// stretches it over the output.
@@ -70,13 +109,6 @@ pub struct MaskParams {
     /// At `1.0` the target is the darkest modelled point; lower values trade
     /// uniformity for retained brightness.
     pub compensation: f32,
-    /// Transfer response used to convert a luminance ratio into the encoded
-    /// value the compositor will actually multiply by.
-    pub gamma: f32,
-    /// Desktop level, encoded `0.0..=1.0`, at which a per-channel correction is
-    /// exact. Irrelevant while every defect is neutral.
-    pub reference: f32,
-    pub composition: Composition,
     pub quality: MaskQuality,
     /// Apply a fixed ordered dither when the mask is quantized to 8 bit.
     pub dither: bool,
@@ -86,9 +118,6 @@ impl Default for MaskParams {
     fn default() -> Self {
         Self {
             compensation: 1.0,
-            gamma: 2.2,
-            reference: 0.5,
-            composition: Composition::default(),
             quality: MaskQuality::default(),
             dither: true,
         }
@@ -211,14 +240,13 @@ pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: 
     }
 
     // First pass: the modelled panel response and its extremes.
-    let panel_gain = model_field(&active, params.composition, width, height, true);
+    let panel_gain = model_field(&active, width, height, true);
     let (min_gain, max_gain) = extremes(&panel_gain);
 
     // Second pass: bring every pixel down to the per-channel target.
     let compensation = params.compensation.clamp(0.0, 1.0);
     let target = max_gain.zip(min_gain, |hi, lo| lerp(hi, lo, compensation));
-    let inv_gamma = 1.0 / params.gamma.max(0.1);
-    let reference = params.reference.clamp(0.0, 1.0);
+    let inv_gamma = 1.0 / GAMMA;
 
     let mut texels = vec![[0.0f32; 4]; count];
     for (texel, gain) in texels.iter_mut().zip(panel_gain.iter()) {
@@ -232,7 +260,7 @@ pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: 
         // The shared alpha has to satisfy the channel that needs the most
         // attenuation; the rest get their light handed back as surface colour.
         let deepest = attenuation.min_channel();
-        let colour = attenuation.map(|c| reference * (c - deepest));
+        let colour = attenuation.map(|c| REFERENCE * (c - deepest));
         *texel = [
             colour.r,
             colour.g,
@@ -253,14 +281,12 @@ pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: 
 
 /// The modelled panel response `D(x, y)` on a grid, optionally restricted to
 /// the area each defect can actually reach.
-fn model_field(
-    defects: &[&Defect],
-    composition: Composition,
-    width: u32,
-    height: u32,
-    use_bounds: bool,
-) -> Vec<Rgb> {
-    let mut gain = vec![composition.identity(); (width as usize) * (height as usize)];
+///
+/// Overlapping defects do not stack; the strongest at each point wins. Two
+/// shapes that overlap in a profile are normally describing one blemish between
+/// them, and multiplying their responses would count the same damage twice.
+fn model_field(defects: &[&Defect], width: u32, height: u32, use_bounds: bool) -> Vec<Rgb> {
+    let mut gain = vec![Rgb::ONE; (width as usize) * (height as usize)];
 
     for defect in defects {
         let (x0, x1, y0, y1) = if use_bounds {
@@ -282,12 +308,26 @@ fn model_field(
             for x in x0..x1 {
                 let u = (x as f32 + 0.5) / width as f32;
                 let slot = &mut gain[row + x as usize];
-                *slot = composition.combine(*slot, defect.gain_at(Vec2::new(u, v)));
+                *slot = strongest(*slot, defect.gain_at(Vec2::new(u, v)));
             }
         }
     }
 
     gain
+}
+
+/// The larger departure from a healthy `1.0`, per channel, in either direction.
+///
+/// A defect can be bright or dim, so "worst" has to mean the same thing for both
+/// signs rather than simply the larger or smaller number.
+fn strongest(accumulated: Rgb, next: Rgb) -> Rgb {
+    accumulated.zip(next, |a, b| {
+        if (b - 1.0).abs() > (a - 1.0).abs() {
+            b
+        } else {
+            a
+        }
+    })
 }
 
 /// Dimmest and brightest response in a modelled field, per channel.
@@ -315,16 +355,11 @@ fn extremes(field: &[Rgb]) -> (Rgb, Rgb) {
 ///
 /// This is the model itself rather than the correction derived from it, which
 /// is what the on-screen editor shows in "Show model" mode.
-pub fn generate_model_field(
-    defects: &[Defect],
-    composition: Composition,
-    width: u32,
-    height: u32,
-) -> Mask {
+pub fn generate_model_field(defects: &[Defect], width: u32, height: u32) -> Mask {
     let width = width.max(1);
     let height = height.max(1);
     let active: Vec<&Defect> = defects.iter().filter(|d| d.enabled()).collect();
-    let gain = model_field(&active, composition, width, height, false);
+    let gain = model_field(&active, width, height, false);
     let (min_gain, max_gain) = extremes(&gain);
 
     let texels = gain
@@ -483,6 +518,18 @@ mod tests {
         )
     }
 
+    /// The light a defective patch actually emits: the compositor's encoded
+    /// output driven through the defect's gain and the display's response.
+    fn emitted(texel: Texel, level: f32, gain: Rgb) -> Rgb {
+        composited(texel, level).zip(gain, |v, g| g * v.powf(GAMMA))
+    }
+
+    /// The encoded attenuation a wanted luminance ratio implies, so expectations
+    /// can be written in the luminance terms the model reasons in.
+    fn encoded(ratio: f32) -> f32 {
+        ratio.powf(1.0 / GAMMA)
+    }
+
     #[test]
     fn no_defects_means_no_attenuation() {
         let mask = generate_at(&[], &MaskParams::default(), 32, 32);
@@ -503,11 +550,10 @@ mod tests {
 
     #[test]
     fn a_bright_spot_is_darkened_where_it_sits() {
-        // A spot emitting 15 % too much light, corrected at full strength with
-        // linear gamma: the spot drops to 1/1.15 and the rest is left alone.
+        // A spot emitting 15 % too much light, corrected at full strength: the
+        // spot drops to 1/1.15 of its own output and the rest is left alone.
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -518,7 +564,11 @@ mod tests {
         assert_relative_eq!(mask.target.r, 1.0, epsilon = 1e-3);
 
         // Centre of the spot: attenuated back to a healthy pixel's brightness.
-        assert_relative_eq!(mask.alpha_at(32, 32), 1.0 - 1.0 / 1.15, epsilon = 1e-3);
+        assert_relative_eq!(
+            mask.alpha_at(32, 32),
+            1.0 - encoded(1.0 / 1.15),
+            epsilon = 1e-3
+        );
         // Far corner, already healthy: untouched.
         assert_relative_eq!(mask.alpha_at(0, 0), 0.0, epsilon = 1e-3);
     }
@@ -529,7 +579,6 @@ mod tests {
         // healthy majority of the panel down to it.
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -538,7 +587,7 @@ mod tests {
         assert_relative_eq!(mask.min_gain.r, 0.85, epsilon = 1e-3);
         assert_relative_eq!(mask.target.r, 0.85, epsilon = 1e-3);
         assert_relative_eq!(mask.alpha_at(32, 32), 0.0, epsilon = 1e-3);
-        assert_relative_eq!(mask.alpha_at(0, 0), 0.15, epsilon = 1e-3);
+        assert_relative_eq!(mask.alpha_at(0, 0), 1.0 - encoded(0.85), epsilon = 1e-3);
     }
 
     #[test]
@@ -546,7 +595,6 @@ mod tests {
         // Every pixel equally bright is already uniform; dimming it would cost
         // brightness and buy nothing.
         let params = MaskParams {
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -563,7 +611,6 @@ mod tests {
     #[test]
     fn compensation_scales_the_correction() {
         let mut params = MaskParams {
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -572,7 +619,11 @@ mod tests {
 
         // Half way between no correction (T = 1.2) and full (T = 1.0).
         assert_relative_eq!(mask.target.r, 1.1, epsilon = 1e-3);
-        assert_relative_eq!(mask.alpha_at(32, 32), 1.0 - 1.1 / 1.2, epsilon = 1e-3);
+        assert_relative_eq!(
+            mask.alpha_at(32, 32),
+            1.0 - encoded(1.1 / 1.2),
+            epsilon = 1e-3
+        );
         // A healthy pixel is already at or below the partial target.
         assert_relative_eq!(mask.alpha_at(0, 0), 0.0, epsilon = 1e-6);
 
@@ -582,43 +633,44 @@ mod tests {
     }
 
     #[test]
-    fn gamma_shapes_the_encoded_attenuation() {
+    fn the_transfer_response_shapes_the_encoded_attenuation() {
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 2.2,
             dither: false,
             ..Default::default()
         };
         let mask = generate_at(&[spot(Vec2::splat(0.5), 0.15)], &params, 65, 65);
         let linear = 1.0 / 1.15f32;
-        assert_relative_eq!(
-            mask.alpha_at(32, 32),
-            1.0 - linear.powf(1.0 / 2.2),
-            epsilon = 1e-3
-        );
-        // Gamma encoding always removes less light than the linear ratio would.
+        assert_relative_eq!(mask.alpha_at(32, 32), 1.0 - encoded(linear), epsilon = 1e-3);
+        // Encoding always removes less coverage than the luminance ratio itself.
         assert!(mask.alpha_at(32, 32) < 1.0 - linear);
     }
 
     #[test]
-    fn defects_compose_multiplicatively() {
-        // Two coincident 10 % spots must behave like 1.1 * 1.1 = 1.21.
+    fn overlapping_defects_take_the_strongest_rather_than_stacking() {
+        // Two coincident 10 % spots describe one blemish, not a 1.1 * 1.1 = 1.21
+        // one, so the model must not compound them.
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
         let defects = [spot(Vec2::splat(0.5), 0.1), spot(Vec2::splat(0.5), 0.1)];
         let mask = generate_at(&defects, &params, 65, 65);
-        assert_relative_eq!(mask.max_gain.r, 1.21, epsilon = 1e-3);
-
-        let strongest = MaskParams {
-            composition: Composition::Strongest,
-            ..params
-        };
-        let mask = generate_at(&defects, &strongest, 65, 65);
         assert_relative_eq!(mask.max_gain.r, 1.1, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn the_strongest_rule_reads_both_signs_of_damage() {
+        assert_relative_eq!(strongest(Rgb::splat(1.1), Rgb::splat(1.2)).r, 1.2);
+        assert_relative_eq!(strongest(Rgb::splat(0.9), Rgb::splat(0.8)).r, 0.8);
+        // A dim patch outranks a milder bright one, and vice versa.
+        assert_relative_eq!(strongest(Rgb::splat(1.1), Rgb::splat(0.7)).r, 0.7);
+        // Channels are independent.
+        assert_eq!(
+            strongest(Rgb::new(1.2, 1.0, 1.0), Rgb::new(1.0, 1.5, 1.0)),
+            Rgb::new(1.2, 1.5, 1.0)
+        );
     }
 
     #[test]
@@ -626,8 +678,6 @@ mod tests {
         // A spot that is 20 % too red and correct elsewhere.
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
-            reference: 0.5,
             dither: false,
             ..Default::default()
         };
@@ -638,15 +688,40 @@ mod tests {
             65,
         );
 
-        // On the reference grey the red channel comes down by exactly 1/1.2
-        // and the other two are left exactly where they were.
-        let out = composited(mask.texel_at(32, 32), 0.5);
-        assert_relative_eq!(out.r, 0.5 / 1.2, epsilon = 1e-4);
-        assert_relative_eq!(out.g, 0.5, epsilon = 1e-4);
-        assert_relative_eq!(out.b, 0.5, epsilon = 1e-4);
+        // On the reference grey the red channel comes down by exactly the ratio
+        // it needs and the other two are left where they were.
+        let out = composited(mask.texel_at(32, 32), REFERENCE);
+        assert_relative_eq!(out.r, REFERENCE * encoded(1.0 / 1.2), epsilon = 1e-4);
+        assert_relative_eq!(out.g, REFERENCE, epsilon = 1e-4);
+        assert_relative_eq!(out.b, REFERENCE, epsilon = 1e-4);
 
         // Away from the spot nothing is touched at all.
         assert_eq!(mask.texel_at(0, 0), [0.0; 4]);
+    }
+
+    #[test]
+    fn the_shared_alpha_cannot_move_a_colour_cast() {
+        // Alpha scales all three channels by one factor, so on its own it can
+        // only make a patch dimmer -- the cast survives untouched. Correcting a
+        // tint is the entire reason the colour channels are there.
+        let params = MaskParams {
+            dither: false,
+            ..Default::default()
+        };
+        let gain = Rgb::new(1.0, 1.1, 1.2);
+        let mask = generate_at(
+            &[tinted(Vec2::splat(0.5), Rgb::new(0.0, 0.1, 0.2))],
+            &params,
+            65,
+            65,
+        );
+        let texel = mask.texel_at(32, 32);
+
+        let alpha_only = emitted([0.0, 0.0, 0.0, texel[3]], REFERENCE, gain);
+        assert_relative_eq!(alpha_only.b / alpha_only.r, 1.2, epsilon = 1e-3);
+
+        let corrected = emitted(texel, REFERENCE, gain);
+        assert_relative_eq!(corrected.b / corrected.r, 1.0, epsilon = 1e-3);
     }
 
     #[test]
@@ -654,7 +729,6 @@ mod tests {
         // The colour channels only ever carry the per-channel difference, so a
         // neutral correction must reduce exactly to the black-with-alpha case.
         let params = MaskParams {
-            gamma: 2.2,
             dither: false,
             ..Default::default()
         };
@@ -669,8 +743,6 @@ mod tests {
     #[test]
     fn per_channel_correction_lifts_black_by_a_reported_amount() {
         let params = MaskParams {
-            gamma: 1.0,
-            reference: 0.5,
             dither: false,
             ..Default::default()
         };
@@ -681,43 +753,70 @@ mod tests {
             65,
         );
 
-        // Green and blue keep their light: 0.5 * (1 - 1/1.2).
-        let expected = 0.5 * (1.0 - 1.0 / 1.2);
+        // Green and blue keep the light red had to give up.
+        let expected = REFERENCE * (1.0 - encoded(1.0 / 1.2));
         assert_relative_eq!(mask.black_lift(), expected, epsilon = 1e-4);
         assert_relative_eq!(
             composited(mask.texel_at(32, 32), 0.0).g,
             expected,
             epsilon = 1e-4
         );
+        // Where one channel needs no attenuation at all, the glow is exactly the
+        // reference fraction of the alpha beside it. That is the whole trade in
+        // one line: the offsets buy colour accuracy and are paid for on black.
+        assert_relative_eq!(
+            mask.black_lift(),
+            REFERENCE * mask.peak_alpha(),
+            epsilon = 1e-6
+        );
     }
 
     #[test]
-    fn the_reference_level_chooses_where_colour_is_exact() {
-        for reference in [0.1f32, 0.5, 0.9] {
-            let params = MaskParams {
-                gamma: 1.0,
-                reference,
-                dither: false,
-                ..Default::default()
-            };
-            let mask = generate_at(
-                &[tinted(Vec2::splat(0.5), Rgb::new(0.2, 0.1, 0.0))],
-                &params,
-                65,
-                65,
+    fn colour_is_exact_at_the_reference_level_and_drifts_either_side() {
+        let params = MaskParams {
+            dither: false,
+            ..Default::default()
+        };
+        let gain = Rgb::new(1.2, 1.1, 1.0);
+        let mask = generate_at(
+            &[tinted(Vec2::splat(0.5), Rgb::new(0.2, 0.1, 0.0))],
+            &params,
+            65,
+            65,
+        );
+        let texel = mask.texel_at(32, 32);
+
+        // At the reference level every channel lands on the healthy target, so
+        // the patch is indistinguishable from the panel around it.
+        let out = composited(texel, REFERENCE);
+        assert_relative_eq!(out.r, REFERENCE * encoded(1.0 / 1.2), epsilon = 1e-4);
+        assert_relative_eq!(out.g, REFERENCE * encoded(1.0 / 1.1), epsilon = 1e-4);
+        assert_relative_eq!(out.b, REFERENCE, epsilon = 1e-4);
+
+        // Red needed the most attenuation, so it carries no offset and alpha
+        // alone corrects it exactly at every level. That is precisely why alpha
+        // is pinned to the deepest channel rather than anywhere else.
+        let healthy = |level: f32| level.powf(GAMMA);
+        for level in [0.05f32, 0.35, 0.8, 1.0] {
+            assert_relative_eq!(
+                emitted(texel, level, gain).r,
+                healthy(level),
+                epsilon = 1e-6
             );
-            let out = composited(mask.texel_at(32, 32), reference);
-            assert_relative_eq!(out.r, reference / 1.2, epsilon = 1e-4);
-            assert_relative_eq!(out.g, reference / 1.1, epsilon = 1e-4);
-            assert_relative_eq!(out.b, reference, epsilon = 1e-4);
         }
+
+        // The other two drift, because their offsets are constant while the
+        // defect is proportional to content: above the reference level the
+        // offset is too small and the patch is left slightly dark, below it the
+        // offset is too large and the patch is left slightly bright.
+        assert!(emitted(texel, 0.9, gain).g < healthy(0.9));
+        assert!(emitted(texel, 0.1, gain).g > healthy(0.1));
     }
 
     #[test]
     fn texels_stay_valid_premultiplied_values() {
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 2.2,
             ..Default::default()
         };
         let defects = [
@@ -756,7 +855,6 @@ mod tests {
         // The whole reduced-resolution idea only holds if the error is small.
         let defects = [tinted(Vec2::new(0.63, 0.41), Rgb::new(0.12, 0.08, 0.08))];
         let params = MaskParams {
-            gamma: 2.2,
             dither: false,
             ..Default::default()
         };
@@ -784,7 +882,6 @@ mod tests {
     fn rasterizes_black_with_varying_alpha() {
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -800,7 +897,7 @@ mod tests {
             );
         }
         // Healthy corner, attenuated to the 0.85 target.
-        assert_eq!(buf[3], (0.15f32 * 255.0).round() as u8);
+        assert_eq!(buf[3], ((1.0 - encoded(0.85)) * 255.0).round() as u8);
         // Centre of the dim patch, left alone.
         assert_eq!(buf[(8 * 17 + 8) * 4 + 3], 0);
     }
@@ -808,8 +905,6 @@ mod tests {
     #[test]
     fn rasterizes_the_colour_channels_premultiplied() {
         let params = MaskParams {
-            gamma: 1.0,
-            reference: 0.5,
             dither: false,
             ..Default::default()
         };
@@ -838,7 +933,6 @@ mod tests {
     fn rasterizer_upsamples_bilinearly() {
         let params = MaskParams {
             compensation: 1.0,
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };

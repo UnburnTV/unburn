@@ -10,6 +10,11 @@ pub const MIN_RADIUS: f32 = 1.0e-4;
 
 /// An elliptical Gaussian blemish.
 ///
+/// Deliberately carries no name. A defect is one of a handful of spots on one
+/// panel, and its position in the profile is the only handle a person needs; a
+/// stored name would be a second, redundant way to refer to the same entry, free
+/// to drift out of step with the order it is presented in.
+///
 /// The brightness response contributed by this defect is
 /// `1 + strength * exp(-0.5 * r²^falloff)` where `r` is the distance from the
 /// centre expressed in units of the (rotated) radii. `falloff = 1` is the plain
@@ -17,17 +22,27 @@ pub const MIN_RADIUS: f32 = 1.0e-4;
 /// the edge, smaller values produce a longer, softer tail.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RadialDefect {
-    #[serde(default = "Uuid::new_v4", deserialize_with = "lenient_uuid")]
+    /// Handle the GUI, the on-screen editor and the overlay process use to agree
+    /// on which defect is selected, where an index would not survive a defect
+    /// being inserted or removed ahead of it.
+    ///
+    /// Never written to a profile: nothing refers to a defect between runs, so a
+    /// stored id would be noise, and a fresh one on load serves just as well. It
+    /// is still *read*, so that a hand-written profile can pin a readable handle
+    /// of its own.
+    #[serde(
+        skip_serializing,
+        default = "Uuid::new_v4",
+        deserialize_with = "lenient_uuid"
+    )]
     pub id: Uuid,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default = "enabled_by_default")]
+    #[serde(default = "enabled_by_default", skip_serializing_if = "is_enabled")]
     pub enabled: bool,
 
     pub center: Vec2,
     pub radius: Vec2,
     /// Rotation of the ellipse in radians, counter-clockwise.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f32,
 
     /// Peak brightness excess at the centre, per channel.
@@ -47,6 +62,16 @@ fn enabled_by_default() -> bool {
 
 fn unit_falloff() -> f32 {
     1.0
+}
+
+/// A profile records only the defects that are *switched off*, since that is the
+/// unusual state and the one worth spelling out.
+fn is_enabled(enabled: &bool) -> bool {
+    *enabled
+}
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 /// Accept any string as a defect id, so hand-written profiles may use readable
@@ -72,7 +97,6 @@ impl Default for RadialDefect {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4(),
-            name: String::new(),
             enabled: true,
             center: Vec2::splat(0.5),
             radius: Vec2::splat(0.1),

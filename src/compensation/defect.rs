@@ -16,41 +16,55 @@ pub trait DefectModel {
     fn bounds(&self) -> (Vec2, Vec2);
 }
 
-/// Discriminant used by the GUI and by the on-disk format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefectKind {
-    Radial,
-}
-
-impl DefectKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            DefectKind::Radial => "radial",
-        }
-    }
-}
-
 /// A single modelled panel defect.
 ///
 /// This is an enum from the very beginning even though only one variant exists,
 /// so that gradients, polygons and painted or imported masks can be added
 /// without disturbing anything that stores or renders defects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(try_from = "StoredDefect", into = "StoredDefect")]
 pub enum Defect {
     Radial(RadialDefect),
+}
+
+/// How a defect is written to and read from a profile.
+///
+/// An ordinary profile writes the radial fields and nothing else. A `kind` key
+/// is still read, so a hand-written `kind = "radial"` keeps loading and a kind
+/// we cannot represent is refused rather than silently flattened into a
+/// Gaussian. Serializing `RadialDefect` directly would leave nowhere to put
+/// that check.
+#[derive(Serialize, Deserialize)]
+struct StoredDefect {
+    #[serde(default, skip_serializing)]
+    kind: Option<String>,
+    #[serde(flatten)]
+    radial: RadialDefect,
+}
+
+impl TryFrom<StoredDefect> for Defect {
+    type Error = String;
+
+    fn try_from(stored: StoredDefect) -> Result<Self, Self::Error> {
+        match stored.kind.as_deref() {
+            None | Some("radial") => Ok(Defect::Radial(stored.radial)),
+            Some(kind) => Err(format!("unknown defect kind `{kind}`")),
+        }
+    }
+}
+
+impl From<Defect> for StoredDefect {
+    fn from(defect: Defect) -> Self {
+        match defect {
+            Defect::Radial(radial) => StoredDefect { kind: None, radial },
+        }
+    }
 }
 
 impl Defect {
     pub fn id(&self) -> Uuid {
         match self {
             Defect::Radial(d) => d.id,
-        }
-    }
-
-    pub fn kind(&self) -> DefectKind {
-        match self {
-            Defect::Radial(_) => DefectKind::Radial,
         }
     }
 
@@ -63,18 +77,6 @@ impl Defect {
     pub fn set_enabled(&mut self, enabled: bool) {
         match self {
             Defect::Radial(d) => d.enabled = enabled,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        match self {
-            Defect::Radial(d) => &d.name,
-        }
-    }
-
-    pub fn set_name(&mut self, name: String) {
-        match self {
-            Defect::Radial(d) => d.name = name,
         }
     }
 
@@ -117,97 +119,73 @@ impl DefectModel for Defect {
     }
 }
 
-/// How the individual defect responses are combined into `D(x, y)`.
-///
-/// Multiplicative composition is the specified behaviour and the only one that
-/// handles overlap sensibly; the enum exists so alternatives can be tried
-/// without touching the mask generator's call sites.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Composition {
-    #[default]
-    Multiplicative,
-    /// Take the worst defect at each point instead of stacking them.
-    #[serde(alias = "minimum")]
-    Strongest,
-}
-
-impl Composition {
-    pub const ALL: [Composition; 2] = [Composition::Multiplicative, Composition::Strongest];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Composition::Multiplicative => "Multiplicative",
-            Composition::Strongest => "Strongest",
-        }
-    }
-
-    /// Neutral element to start an accumulation from.
-    pub fn identity(self) -> Rgb {
-        Rgb::ONE
-    }
-
-    pub fn combine(self, accumulated: Rgb, next: Rgb) -> Rgb {
-        match self {
-            Composition::Multiplicative => accumulated.zip(next, |a, b| a * b),
-            // "Worst" is the largest deviation from healthy in either direction,
-            // so this works for bright and dim defects alike.
-            Composition::Strongest => accumulated.zip(next, |a, b| {
-                if (b - 1.0).abs() > (a - 1.0).abs() {
-                    b
-                } else {
-                    a
-                }
-            }),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn multiplicative_composition_stacks_overlap() {
-        let c = Composition::Multiplicative;
-        let g = c.combine(c.combine(c.identity(), Rgb::splat(1.1)), Rgb::splat(1.1));
-        assert!((g.r - 1.21).abs() < 1e-6);
-    }
-
-    #[test]
-    fn strongest_composition_keeps_the_worst_in_either_direction() {
-        let c = Composition::Strongest;
-        let bright = c.combine(c.combine(c.identity(), Rgb::splat(1.1)), Rgb::splat(1.2));
-        assert!((bright.r - 1.2).abs() < 1e-6);
-
-        let dim = c.combine(c.combine(c.identity(), Rgb::splat(0.9)), Rgb::splat(0.8));
-        assert!((dim.r - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn composition_works_channel_by_channel() {
-        let c = Composition::Multiplicative;
-        let g = c.combine(Rgb::new(1.2, 1.0, 1.0), Rgb::new(1.0, 1.5, 1.0));
-        assert_eq!(g, Rgb::new(1.2, 1.5, 1.0));
-    }
-
-    #[test]
-    fn the_old_composition_name_still_parses() {
-        #[derive(serde::Deserialize)]
-        struct Holder {
-            composition: Composition,
-        }
-        let holder: Holder = toml::from_str("composition = \"minimum\"").unwrap();
-        assert_eq!(holder.composition, Composition::Strongest);
-    }
-
-    #[test]
     fn defect_roundtrips_through_toml() {
         let d = Defect::Radial(RadialDefect::default());
-        let text = toml::to_string(&d).unwrap();
-        assert!(text.contains("kind = \"radial\""));
-        let back: Defect = toml::from_str(&text).unwrap();
-        assert_eq!(d, back);
+        let back: Defect = toml::from_str(&toml::to_string(&d).unwrap()).unwrap();
+        // The id is minted anew on the way in, so compare everything else.
+        assert_eq!(back.as_radial().unwrap().center, d.center());
+        assert_eq!(back.enabled(), d.enabled());
+    }
+
+    /// A defect at its defaults should write only what cannot be inferred:
+    /// where it is, how big it is and how strong.
+    #[test]
+    fn a_plain_defect_writes_nothing_it_need_not() {
+        let text = toml::to_string(&Defect::Radial(RadialDefect::default())).unwrap();
+        for absent in ["kind", "id", "name", "enabled", "rotation"] {
+            assert!(
+                !text.contains(absent),
+                "{absent} should not appear in:\n{text}"
+            );
+        }
+        assert!(text.contains("center"), "{text}");
+        assert!(text.contains("strength"), "{text}");
+    }
+
+    #[test]
+    fn the_unusual_states_are_still_written() {
+        let text = toml::to_string(&Defect::Radial(RadialDefect {
+            enabled: false,
+            rotation: 0.5,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(text.contains("rotation = 0.5"), "{text}");
+    }
+
+    /// Profiles written before any of this became optional must keep loading:
+    /// the fields that are now implied, the readable defect ids such a profile
+    /// may pin, and the names defects no longer have.
+    #[test]
+    fn a_profile_that_spells_everything_out_still_loads() {
+        let defect: Defect = toml::from_str(
+            r#"
+            kind = "radial"
+            id = "top-left"
+            name = "Spot 1"
+            enabled = true
+            center = [0.2, 0.3]
+            radius = [0.1, 0.1]
+            rotation = 0.0
+            strength = 0.08
+            falloff = 1.0
+            "#,
+        )
+        .unwrap();
+        assert_eq!(defect.center(), Vec2::new(0.2, 0.3));
+        assert!(defect.enabled());
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused_rather_than_taken_for_a_radial_one() {
+        let text = "kind = \"polygon\"\ncenter = [0.5, 0.5]\nradius = [0.1, 0.1]\nstrength = 0.1\n";
+        assert!(toml::from_str::<Defect>(text).is_err());
     }
 
     #[test]
@@ -227,6 +205,7 @@ mod tests {
         });
         let text = toml::to_string(&d).unwrap();
         assert!(text.contains("strength = [0.2, 0.1, 0.05]"), "{text}");
-        assert_eq!(toml::from_str::<Defect>(&text).unwrap(), d);
+        let back = toml::from_str::<Defect>(&text).unwrap();
+        assert_eq!(back.as_radial().unwrap().strength, Rgb::new(0.2, 0.1, 0.05));
     }
 }

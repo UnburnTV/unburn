@@ -254,7 +254,7 @@ struct Live {
 ///
 /// This holds all the "when do we actually need to recompute" logic, which is
 /// what keeps the program idle: masks are regenerated only when a defect,
-/// compensation, gamma, quality or the output geometry moves.
+/// compensation, quality or the output geometry moves.
 #[derive(Default)]
 pub struct Reconciler {
     desired: DesiredState,
@@ -374,7 +374,7 @@ impl Reconciler {
                         .params
                         .quality
                         .resolution_for(output.width, output.height);
-                    mask::generate_model_field(&surface_defects, settings.params.composition, w, h)
+                    mask::generate_model_field(&surface_defects, w, h)
                 });
                 backend.set_model(overlay, model);
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    compensation::{Composition, Defect, MaskParams, MaskQuality},
+    compensation::{Defect, MaskParams, MaskQuality},
     display::DisplayIdentity,
 };
 
@@ -79,15 +79,8 @@ pub struct DisplayProfile {
     pub enabled: bool,
     #[serde(default = "default_compensation")]
     pub compensation: f32,
-    #[serde(default = "default_gamma")]
-    pub gamma: f32,
-    /// Desktop grey level at which a per-channel correction is exact.
-    #[serde(default = "default_reference")]
-    pub reference: f32,
     #[serde(default)]
     pub quality: MaskQuality,
-    #[serde(default)]
-    pub composition: Composition,
     #[serde(default = "default_true")]
     pub dither: bool,
 
@@ -101,12 +94,6 @@ fn default_true() -> bool {
 fn default_compensation() -> f32 {
     1.0
 }
-fn default_gamma() -> f32 {
-    2.2
-}
-fn default_reference() -> f32 {
-    0.5
-}
 
 impl DisplayProfile {
     pub fn new(identity: DisplayIdentity) -> Self {
@@ -115,10 +102,7 @@ impl DisplayProfile {
             identity,
             enabled: true,
             compensation: default_compensation(),
-            gamma: default_gamma(),
-            reference: default_reference(),
             quality: MaskQuality::default(),
-            composition: Composition::default(),
             dither: true,
             defects: Vec::new(),
         }
@@ -127,9 +111,6 @@ impl DisplayProfile {
     pub fn mask_params(&self) -> MaskParams {
         MaskParams {
             compensation: self.compensation.clamp(0.0, 1.0),
-            gamma: self.gamma.clamp(0.1, 6.0),
-            reference: self.reference.clamp(0.0, 1.0),
-            composition: self.composition,
             quality: self.quality,
             dither: self.dither,
         }
@@ -147,15 +128,10 @@ impl DisplayProfile {
         self.defects.iter().position(|d| d.id() == id)
     }
 
-    /// A name like `Spot 3` that is not already taken.
-    pub fn next_defect_name(&self) -> String {
-        for n in 1.. {
-            let candidate = format!("Spot {n}");
-            if !self.defects.iter().any(|d| d.name() == candidate) {
-                return candidate;
-            }
-        }
-        unreachable!()
+    /// What to call the defect at `index`, which is the only name a defect has:
+    /// its place in this list.
+    pub fn defect_label(index: usize) -> String {
+        format!("Spot {}", index + 1)
     }
 }
 
@@ -422,10 +398,35 @@ falloff = 1.3
         let display = &profile.displays[0];
         assert!(display.enabled);
         assert_eq!(display.compensation, 1.0);
-        assert_eq!(display.gamma, 2.2);
-        assert_eq!(display.reference, 0.5);
         assert_eq!(display.quality, MaskQuality::Normal);
         assert!(display.defects.is_empty());
+    }
+
+    #[test]
+    fn retired_calibration_keys_are_ignored_rather_than_refused() {
+        // Gamma, reference level and composition were once per-display settings.
+        // They are fixed in the model now, but a profile written before that has
+        // to keep loading -- silently, and without losing anything else on the
+        // way past.
+        let profile: Profile = toml::from_str(
+            "version = 1\n\
+             [[display]]\n\
+             connector = \"DP-1\"\n\
+             compensation = 0.6\n\
+             gamma = 2.4\n\
+             reference = 0.9\n\
+             composition = \"multiplicative\"\n",
+        )
+        .unwrap();
+        let display = &profile.displays[0];
+        assert_eq!(display.compensation, 0.6);
+        assert_eq!(display.identity.connector.as_deref(), Some("DP-1"));
+
+        // And they do not come back when it is written out again.
+        let text = toml::to_string(&profile).unwrap();
+        assert!(!text.contains("gamma"), "{text}");
+        assert!(!text.contains("reference"), "{text}");
+        assert!(!text.contains("composition"), "{text}");
     }
 
     #[test]
@@ -438,7 +439,6 @@ falloff = 1.3
         });
         display.compensation = 0.82;
         display.defects.push(Defect::Radial(RadialDefect {
-            name: "Spot 1".into(),
             center: Vec2::new(0.62, 0.43),
             ..Default::default()
         }));
@@ -446,7 +446,9 @@ falloff = 1.3
         let text = toml::to_string(&profile).unwrap();
         assert!(text.contains("center = [0.62, 0.43]"), "{text}");
         let back: Profile = toml::from_str(&text).unwrap();
-        assert_eq!(profile, back);
+        // Compared as written rather than by value: defect ids are runtime
+        // handles, minted afresh on load and absent from the file.
+        assert_eq!(toml::to_string(&back).unwrap(), text);
     }
 
     #[test]
@@ -557,16 +559,31 @@ falloff = 1.3
     }
 
     #[test]
-    fn defect_names_do_not_collide() {
-        let mut display = DisplayProfile::new(DisplayIdentity::default());
-        for _ in 0..3 {
-            let name = display.next_defect_name();
+    fn defects_are_known_by_their_position() {
+        assert_eq!(DisplayProfile::defect_label(0), "Spot 1");
+        assert_eq!(DisplayProfile::defect_label(2), "Spot 3");
+    }
+
+    /// The order defects are written in is the only thing identifying them, so a
+    /// round trip must not disturb it.
+    #[test]
+    fn saving_and_loading_preserves_the_order_of_defects() {
+        let mut profile = Profile::default();
+        let display = profile.entry(&DisplayIdentity::default());
+        for x in [0.1, 0.5, 0.9] {
             display.defects.push(Defect::Radial(RadialDefect {
-                name,
+                center: Vec2::new(x, 0.5),
                 ..Default::default()
             }));
         }
-        assert_eq!(display.defects[2].name(), "Spot 3");
+
+        let back: Profile = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
+        let centers: Vec<f32> = back.displays[0]
+            .defects
+            .iter()
+            .map(|d| d.center().x)
+            .collect();
+        assert_eq!(centers, vec![0.1, 0.5, 0.9]);
     }
 
     #[test]

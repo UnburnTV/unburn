@@ -364,7 +364,6 @@ mod tests {
             ..Default::default()
         });
         let params = MaskParams {
-            gamma: 1.0,
             dither: false,
             ..Default::default()
         };
@@ -380,15 +379,18 @@ mod tests {
 
     #[test]
     fn rendering_a_mask_produces_black_with_alpha() {
+        let mask = spot_mask();
         let mut renderer = CpuMaskRenderer::new(64, 64, false);
-        renderer.upload_mask(&spot_mask());
+        renderer.upload_mask(&mask);
         renderer.render();
 
         assert_eq!(pixel(&renderer, 32, 32)[0..3], [0, 0, 0]);
-        assert!(
-            alpha_at(&renderer, 32, 32) > 30,
-            "the bright spot must be darkened"
-        );
+        // The centre of the spot is the deepest point of the mask, and the
+        // renderer's job is to reproduce it rather than to invent a value.
+        let peak = (mask.peak_alpha() * 255.0).round() as i32;
+        assert!(peak > 0, "the bright spot must be darkened");
+        let got = alpha_at(&renderer, 32, 32) as i32;
+        assert!((got - peak).abs() <= 1, "centre {got}, mask peak {peak}");
         assert!(
             alpha_at(&renderer, 0, 0) <= 2,
             "a healthy corner keeps all its light"

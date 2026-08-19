@@ -10,7 +10,7 @@ pub mod radial;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-pub use defect::{Composition, Defect, DefectKind, DefectModel};
+pub use defect::{Defect, DefectModel};
 pub use mask::{Mask, MaskParams, MaskQuality};
 pub use radial::RadialDefect;
 
