@@ -235,8 +235,9 @@ impl Profile {
         match self.best_index(identity) {
             Some(i) => {
                 // Refresh the identity so a monitor that moved to another port
-                // keeps matching next time.
-                self.displays[i].identity = identity.clone();
+                // keeps matching next time, without discarding identifiers this
+                // session happens not to be able to read.
+                self.displays[i].identity.refresh_from(identity);
                 &mut self.displays[i]
             }
             None => {
@@ -500,6 +501,59 @@ falloff = 1.3
             profile.displays[0].identity.connector.as_deref(),
             Some("HDMI-A-2")
         );
+    }
+
+    fn living_room_tv() -> DisplayIdentity {
+        DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("SAM".into()),
+            model: Some("QN90B".into()),
+            serial: Some("SN12345".into()),
+            edid_hash: Some("aaaaaaaaaaaaaaaa".into()),
+        }
+    }
+
+    #[test]
+    fn swapping_the_monitor_on_a_port_leaves_the_old_profile_alone() {
+        let mut profile = Profile::default();
+        let tv = profile.entry(&living_room_tv());
+        tv.name = "Living Room TV".into();
+        tv.compensation = 0.82;
+
+        profile.entry(&DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("DEL".into()),
+            model: Some("U2723QE".into()),
+            serial: Some("CN-0ABCDE".into()),
+            edid_hash: Some("bbbbbbbbbbbbbbbb".into()),
+        });
+
+        assert_eq!(profile.displays.len(), 2);
+        assert_eq!(profile.displays[0].name, "Living Room TV");
+        assert_eq!(profile.displays[0].compensation, 0.82);
+        assert_eq!(profile.displays[0].identity, living_room_tv());
+        assert_eq!(profile.displays[1].compensation, 1.0);
+    }
+
+    #[test]
+    fn a_session_that_cannot_read_edid_keeps_what_an_earlier_one_learned() {
+        let mut profile = Profile::default();
+        profile.entry(&living_room_tv());
+
+        // The same panel as a Wayland client sees it: no serial, no EDID, and a
+        // spelled-out vendor name.
+        profile.entry(&DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("Samsung Electric Company".into()),
+            model: Some("QN90B".into()),
+            serial: None,
+            edid_hash: None,
+        });
+
+        assert_eq!(profile.displays.len(), 1);
+        let identity = &profile.displays[0].identity;
+        assert_eq!(identity.serial.as_deref(), Some("SN12345"));
+        assert_eq!(identity.edid_hash.as_deref(), Some("aaaaaaaaaaaaaaaa"));
     }
 
     #[test]

@@ -46,6 +46,7 @@ use crate::{
 };
 
 use super::{
+    identity::{self, IdentitySource},
     interaction::{Button, EditorInteraction, EditorKey, Modifiers},
     BackendError, BackendEvent, BackendKind, BackendReport, OverlayBackend, PatternAction, Result,
     Support,
@@ -127,6 +128,9 @@ impl WaylandBackend {
             outputs: Vec::new(),
             overlays: HashMap::new(),
             patterns: HashMap::new(),
+            // Probed before the round trips below, so that even the initial
+            // output list arrives with serial numbers attached.
+            identity: identity::detect(),
             keyboard: None,
             pointer: None,
             modifiers: Modifiers::default(),
@@ -194,6 +198,13 @@ struct State {
     overlays: HashMap<OverlayId, Overlay>,
     patterns: HashMap<OutputId, Pattern>,
 
+    /// Whoever in this session can name the monitors, if anyone can.
+    ///
+    /// Kept on the state rather than the backend because this is where the
+    /// output list is assembled. The source talks to the compositor over its own
+    /// connection, so nothing here interleaves with this queue.
+    identity: Option<Box<dyn IdentitySource>>,
+
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
     modifiers: Modifiers,
@@ -211,36 +222,47 @@ impl State {
 
     /// Rebuild the output list from what the compositor has told us.
     fn refresh_outputs(&mut self) {
-        let mut seen = Vec::new();
-        let mut changed = false;
-
+        // The compositor's own view is collected in full first, so the identity
+        // source can be asked once for the whole set rather than once per
+        // monitor: a query is a Wayland roundtrip or a D-Bus call.
+        let mut handles = Vec::new();
+        let mut infos = Vec::new();
         for output in self.output_state.outputs() {
             let Some(info) = self.output_state.info(&output) else {
                 continue;
             };
-            let existing = self.outputs.iter().position(|t| t.output == output);
-            let id = match existing {
+            let id = match self.outputs.iter().position(|t| t.output == output) {
                 Some(index) => self.outputs[index].id,
                 None => {
                     self.next_id += 1;
                     OutputId(self.next_id)
                 }
             };
+            handles.push(output);
+            infos.push(convert_output(id, &info));
+        }
 
-            let converted = convert_output(id, &info);
-            match existing {
+        // `wl_output` has no field for a serial number, so this is the only
+        // chance to tell two units of one model apart. It happens before the
+        // comparison below so that the stored list, and the event announcing it,
+        // both carry whatever was learned.
+        if let Some(source) = self.identity.as_deref_mut() {
+            identity::enrich(&mut infos, source);
+        }
+
+        let mut seen = Vec::new();
+        let mut changed = false;
+        for (output, info) in handles.into_iter().zip(infos) {
+            let id = info.id;
+            match self.outputs.iter().position(|t| t.output == output) {
                 Some(index) => {
-                    if self.outputs[index].info != converted {
-                        self.outputs[index].info = converted;
+                    if self.outputs[index].info != info {
+                        self.outputs[index].info = info;
                         changed = true;
                     }
                 }
                 None => {
-                    self.outputs.push(TrackedOutput {
-                        id,
-                        output: output.clone(),
-                        info: converted,
-                    });
+                    self.outputs.push(TrackedOutput { id, output, info });
                     changed = true;
                 }
             }

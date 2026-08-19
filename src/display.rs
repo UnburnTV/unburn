@@ -36,14 +36,90 @@ impl MatchScore {
     pub const WEAK: u32 = 10;
 }
 
+/// Whether both sides know this field and agree on it.
+fn same(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => !a.is_empty() && a.eq_ignore_ascii_case(b),
+        _ => false,
+    }
+}
+
+/// Whether both sides know this field and disagree. An absent or empty value is
+/// ignorance, not disagreement.
+fn differs(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => !a.is_empty() && !b.is_empty() && !a.eq_ignore_ascii_case(b),
+        _ => false,
+    }
+}
+
 impl DisplayIdentity {
+    /// Whether these identities are provably different panels.
+    ///
+    /// Connector names are deliberately not consulted: a port says where a
+    /// monitor is plugged in, not which monitor it is. Manufacturer names are
+    /// not either, because the same vendor appears as a three-letter PNP code
+    /// through EDID and as a full company name through Wayland.
+    pub fn contradicts(&self, other: &Self) -> bool {
+        // The digest covers the whole EDID block, including the fields below,
+        // so agreement there cannot be overruled by them.
+        if same(&self.edid_hash, &other.edid_hash) {
+            return false;
+        }
+        differs(&self.edid_hash, &other.edid_hash)
+            || differs(&self.serial, &other.serial)
+            || differs(&self.model, &other.model)
+    }
+
+    /// Adopt facts from a second, better-informed view of the same monitor,
+    /// without disturbing anything already known.
+    ///
+    /// Deliberately the opposite precedence to [`Self::refresh_from`]: what the
+    /// display server itself reported always wins. Two reasons. A profile saved
+    /// before an identity source existed holds the display server's spelling of
+    /// the model, and overwriting it with a differently-spelled equivalent would
+    /// read as a contradiction and orphan that profile. And a display server
+    /// naming an output is authoritative about that output, whereas the extra
+    /// source is only ever filling in what the protocol had no field for.
+    pub fn fill_gaps_from(&mut self, extra: &Self) {
+        fn fill(slot: &mut Option<String>, extra: &Option<String>) {
+            let missing = slot.as_ref().is_none_or(|v| v.is_empty());
+            if missing {
+                if let Some(value) = extra.as_ref().filter(|v| !v.is_empty()) {
+                    *slot = Some(value.clone());
+                }
+            }
+        }
+        fill(&mut self.connector, &extra.connector);
+        fill(&mut self.manufacturer, &extra.manufacturer);
+        fill(&mut self.model, &extra.model);
+        fill(&mut self.serial, &extra.serial);
+        fill(&mut self.edid_hash, &extra.edid_hash);
+    }
+
+    /// Fold freshly observed facts into a stored identity.
+    ///
+    /// Only the connector is expected to change for one panel, so identifiers
+    /// the current session cannot read are kept rather than dropped: an X11
+    /// session learns the serial and EDID, and a later Wayland session must not
+    /// erase them.
+    pub fn refresh_from(&mut self, seen: &Self) {
+        fn adopt(stored: &mut Option<String>, seen: &Option<String>) {
+            if let Some(value) = seen.as_ref().filter(|v| !v.is_empty()) {
+                *stored = Some(value.clone());
+            }
+        }
+        adopt(&mut self.connector, &seen.connector);
+        adopt(&mut self.manufacturer, &seen.manufacturer);
+        adopt(&mut self.model, &seen.model);
+        adopt(&mut self.serial, &seen.serial);
+        adopt(&mut self.edid_hash, &seen.edid_hash);
+    }
+
     /// How strongly `self` and `other` look like the same monitor.
     pub fn match_score(&self, other: &Self) -> u32 {
-        fn same(a: &Option<String>, b: &Option<String>) -> bool {
-            match (a, b) {
-                (Some(a), Some(b)) => !a.is_empty() && a.eq_ignore_ascii_case(b),
-                _ => false,
-            }
+        if self.contradicts(other) {
+            return MatchScore::NONE;
         }
 
         let mut score = 0;
@@ -249,9 +325,6 @@ pub fn identity_from_edid(edid: &[u8]) -> DisplayIdentity {
         identity.manufacturer = Some(letters);
     }
 
-    let product = u16::from_le_bytes([edid[10], edid[11]]);
-    let serial_number = u32::from_le_bytes([edid[12], edid[13], edid[14], edid[15]]);
-
     // The four 18-byte descriptors may carry a human-readable name and serial.
     for block in edid[54..126].chunks_exact(18) {
         if block[0..3] != [0, 0, 0] {
@@ -274,12 +347,22 @@ pub fn identity_from_edid(edid: &[u8]) -> DisplayIdentity {
         }
     }
 
-    if identity.model.is_none() && product != 0 {
-        identity.model = Some(format!("{product:04X}"));
-    }
-    if identity.serial.is_none() && serial_number != 0 {
-        identity.serial = Some(format!("{serial_number:08X}"));
-    }
+    // EDID also holds a numeric product code and serial in bytes 10..16, and it
+    // is tempting to format those into strings when the descriptors above are
+    // absent, as many laptop panels leave them. Deliberately not done: the
+    // spelling would be this program's invention, and every other reader invents
+    // a different one — Mutter renders the same product code as `0x0035` where a
+    // bare hexadecimal rendering gives `0035`. Since model and serial are both
+    // grounds for declaring two panels different, that disagreement would orphan
+    // a profile merely because the user logged into an Xorg session instead of a
+    // Wayland one.
+    //
+    // Nothing is lost by leaving them unset. The fallback could only ever run
+    // here, having just parsed an EDID successfully, which means `edid_hash`
+    // above already identifies this panel exactly — a fingerprint of the same
+    // bytes the product code lives in. An invented string adds no evidence on
+    // top of it, and an absent field is read as ignorance rather than as
+    // disagreement.
     identity
 }
 
@@ -336,6 +419,117 @@ mod tests {
         let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
         let moved = ident("HDMI-A-2", "QN90", Some("ABC"));
         assert!(stored.match_score(&moved) >= MatchScore::WEAK);
+    }
+
+    /// The reason this program exists is to not paint one panel's burn-in onto
+    /// another, so a swap on the same port must never inherit a profile.
+    #[test]
+    fn a_replacement_monitor_on_the_same_port_does_not_match() {
+        let mut stored = ident("HDMI-A-1", "QN90", Some("ABC"));
+        stored.edid_hash = Some("aaaaaaaaaaaaaaaa".into());
+        let replacement = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("Dell".into()),
+            model: Some("U2723QE".into()),
+            serial: Some("CN-0ABCDE".into()),
+            edid_hash: Some("bbbbbbbbbbbbbbbb".into()),
+        };
+        assert_eq!(stored.match_score(&replacement), MatchScore::NONE);
+    }
+
+    /// Two units of one model wear differently, so the serial has to separate
+    /// them even though everything else agrees.
+    #[test]
+    fn two_units_of_the_same_model_are_told_apart_by_serial() {
+        let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
+        let other_unit = ident("HDMI-A-1", "QN90", Some("XYZ"));
+        assert_eq!(stored.match_score(&other_unit), MatchScore::NONE);
+    }
+
+    /// Wayland hands out no serial and no EDID, so the model has to carry the
+    /// veto there.
+    #[test]
+    fn a_different_model_on_the_same_port_does_not_match_without_edid() {
+        let stored = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("Samsung".into()),
+            model: Some("QN90".into()),
+            ..Default::default()
+        };
+        let replacement = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("Dell".into()),
+            model: Some("U2723QE".into()),
+            ..Default::default()
+        };
+        assert_eq!(stored.match_score(&replacement), MatchScore::NONE);
+    }
+
+    /// When a platform exposes nothing but the port, that is all there is to go
+    /// on and a profile is still better than none.
+    #[test]
+    fn the_connector_alone_still_matches_when_nothing_stronger_is_known() {
+        let bare = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            ..Default::default()
+        };
+        assert!(bare.match_score(&bare.clone()) >= MatchScore::WEAK);
+    }
+
+    #[test]
+    fn gaps_are_filled_without_overwriting_what_the_display_server_said() {
+        let mut seen = DisplayIdentity {
+            connector: Some("HDMI-1".into()),
+            manufacturer: Some("DEL".into()),
+            model: Some("0x0035".into()),
+            ..Default::default()
+        };
+        seen.fill_gaps_from(&DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            manufacturer: Some("Dell Inc.".into()),
+            model: Some("0035".into()),
+            serial: Some("31HKFH3".into()),
+            edid_hash: Some("7474e7058a61dc27".into()),
+        });
+        // The display server's own spelling wins, so a profile written by an
+        // earlier version keeps matching.
+        assert_eq!(seen.model.as_deref(), Some("0x0035"));
+        assert_eq!(seen.manufacturer.as_deref(), Some("DEL"));
+        assert_eq!(seen.connector.as_deref(), Some("HDMI-1"));
+        // Only what was missing is adopted.
+        assert_eq!(seen.serial.as_deref(), Some("31HKFH3"));
+        assert_eq!(seen.edid_hash.as_deref(), Some("7474e7058a61dc27"));
+    }
+
+    #[test]
+    fn an_empty_field_counts_as_a_gap() {
+        let mut seen = DisplayIdentity {
+            model: Some(String::new()),
+            ..Default::default()
+        };
+        seen.fill_gaps_from(&DisplayIdentity {
+            model: Some("QN90B".into()),
+            ..Default::default()
+        });
+        assert_eq!(seen.model.as_deref(), Some("QN90B"));
+    }
+
+    #[test]
+    fn an_unknown_field_is_not_a_contradiction() {
+        let full = ident("HDMI-A-1", "QN90", Some("ABC"));
+        let partial = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            model: Some("QN90".into()),
+            ..Default::default()
+        };
+        assert!(full.match_score(&partial) >= MatchScore::WEAK);
+    }
+
+    #[test]
+    fn best_match_rejects_a_replacement_on_the_same_port() {
+        let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
+        let outputs = vec![output(1, ident("HDMI-A-1", "U2723QE", Some("XYZ")))];
+        assert!(best_match(&stored, &outputs).is_none());
     }
 
     #[test]
@@ -442,13 +636,42 @@ mod tests {
         assert!(identity.edid_hash.is_some());
     }
 
+    /// Many laptop panels carry no descriptors, only the numeric product code
+    /// and serial in bytes 10..16. Rendering those as text would mean inventing a
+    /// spelling that no other reader of the same bytes agrees with, so the
+    /// fingerprint is left to identify the panel on its own.
     #[test]
-    fn edid_without_descriptors_falls_back_to_the_numeric_fields() {
+    fn edid_without_descriptors_reports_no_model_or_serial() {
         let mut edid = sample_edid();
         edid[54..126].fill(0);
         let identity = identity_from_edid(&edid);
-        assert_eq!(identity.model.as_deref(), Some("0F1E"));
-        assert_eq!(identity.serial.as_deref(), Some("0001E240"));
+        assert_eq!(identity.model, None);
+        assert_eq!(identity.serial, None);
+        assert!(
+            identity.edid_hash.is_some(),
+            "the fingerprint is what identifies such a panel"
+        );
+    }
+
+    /// The two spellings this used to produce, and the reason it no longer does:
+    /// they read as proof of two different panels.
+    #[test]
+    fn the_same_panel_seen_through_two_parsers_still_matches() {
+        let mut edid = sample_edid();
+        edid[54..126].fill(0);
+        let through_edid = DisplayIdentity {
+            connector: Some("eDP-1".into()),
+            ..identity_from_edid(&edid)
+        };
+        // What a compositor that renders the product code itself would report.
+        let through_compositor = DisplayIdentity {
+            connector: Some("eDP-1".into()),
+            manufacturer: Some("SAM".into()),
+            model: Some("0x0f1e".into()),
+            ..Default::default()
+        };
+        assert!(!through_edid.contradicts(&through_compositor));
+        assert!(through_edid.match_score(&through_compositor) >= MatchScore::WEAK);
     }
 
     #[test]

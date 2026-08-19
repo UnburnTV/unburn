@@ -7,6 +7,7 @@
 //! platform-specific, and pretending otherwise only hides the differences that
 //! matter.
 
+pub mod identity;
 pub mod interaction;
 pub mod wayland;
 pub mod x11;
@@ -564,6 +565,43 @@ mod tests {
         let mut reconciler = Reconciler::new();
         reconciler.set_desired(DesiredState {
             displays: vec![settings("HDMI-A-1", false)],
+            ..Default::default()
+        });
+
+        reconciler.sync(&mut backend).unwrap();
+        assert!(!backend.calls.iter().any(|c| matches!(c, Call::Create(_))));
+    }
+
+    /// The whole point of the exercise: corrections traced on one panel must not
+    /// be painted onto whatever is plugged into that port next.
+    #[test]
+    fn a_replacement_monitor_is_not_painted_with_the_old_ones_corrections() {
+        let tv = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            model: Some("QN90B".into()),
+            serial: Some("SN12345".into()),
+            ..Default::default()
+        };
+        let replacement = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            model: Some("U2723QE".into()),
+            serial: Some("CN-0ABCDE".into()),
+            ..Default::default()
+        };
+
+        let mut backend = FakeBackend {
+            outputs: vec![OutputInfo {
+                identity: replacement,
+                ..output(1, "HDMI-A-1")
+            }],
+            ..Default::default()
+        };
+        let mut reconciler = Reconciler::new();
+        reconciler.set_desired(DesiredState {
+            displays: vec![DisplaySettings {
+                identity: tv,
+                ..settings("HDMI-A-1", true)
+            }],
             ..Default::default()
         });
 

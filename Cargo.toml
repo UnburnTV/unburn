@@ -36,6 +36,19 @@ wayland-client = "0.31"
 # X11 overlay backend
 x11rb = { version = "0.14", features = ["randr", "shape", "xfixes"] }
 
+# Monitor identity, one interface per desktop. Neither wl_output nor XRandR
+# under XWayland reveals a serial number, so each desktop is asked through the
+# only interface it offers. See `platform::identity` for why this is not done by
+# reading the kernel's EDID files instead.
+zbus = { version = "5.13", default-features = false, features = [
+    "blocking-api",
+    "async-io",
+] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+wayland-protocols-plasma = { version = "0.3.12", features = ["client"] }
+# Plasma hands the EDID over as base64 rather than raw bytes.
+base64 = "0.23"
+
 [dev-dependencies]
 approx = "0.5"
 

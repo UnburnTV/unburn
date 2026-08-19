@@ -34,6 +34,7 @@ use crate::{
 };
 
 use super::{
+    identity::{self, IdentitySource},
     interaction::{Button, EditorInteraction, EditorKey, Modifiers},
     BackendError, BackendEvent, BackendKind, BackendReport, OverlayBackend, PatternAction, Result,
     Support,
@@ -188,6 +189,15 @@ pub struct X11Backend {
     overlays: HashMap<OverlayId, Overlay>,
     patterns: HashMap<OutputId, Pattern>,
 
+    /// Whoever in this session can name the monitors, if anyone can.
+    ///
+    /// It matters most here rather than on Wayland: under XWayland, RandR
+    /// carries no `EDID` output property at all, so without this an X11 session
+    /// on a Wayland desktop has nothing but the connector name to go on. That is
+    /// not a corner case — it is the ordinary situation on GNOME, which has no
+    /// layer-shell and therefore always uses this backend.
+    identity: Option<Box<dyn IdentitySource>>,
+
     keymap: Keymap,
     modifiers: Modifiers,
     next_id: u32,
@@ -250,6 +260,9 @@ impl X11Backend {
             geometries: HashMap::new(),
             overlays: HashMap::new(),
             patterns: HashMap::new(),
+            // Probed before the first refresh below, so that even the initial
+            // output list arrives with serial numbers attached.
+            identity: identity::detect(),
             keymap,
             modifiers: Modifiers::default(),
             next_id: 0,
@@ -375,6 +388,14 @@ impl X11Backend {
                 },
             );
             outputs.push(info);
+        }
+
+        // One query for the whole set, not one per monitor: each costs a D-Bus
+        // call or a Wayland roundtrip. It has to happen before the comparison
+        // below so that the stored list, and the event announcing it, both carry
+        // whatever was learned.
+        if let Some(source) = self.identity.as_deref_mut() {
+            identity::enrich(&mut outputs, source);
         }
 
         if outputs != self.outputs {
