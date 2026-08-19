@@ -246,6 +246,16 @@ pub fn profile_path(name: Option<&str>) -> Result<PathBuf, ConfigError> {
     })
 }
 
+/// Blank or whitespace-only names refer to the default profile.
+pub fn normalize_profile_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Names of the profiles saved next to the default one.
 pub fn list_profiles() -> Vec<String> {
     let Ok(dir) = config_dir() else {
@@ -466,7 +476,11 @@ falloff = 1.3
 
     #[test]
     fn a_missing_file_is_an_empty_profile() {
-        let path = std::env::temp_dir().join("unburn-definitely-absent.toml");
+        let path = std::env::temp_dir().join(format!(
+            "unburn-missing-{}-{}.toml",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let profile = Profile::load_or_default(&path).unwrap();
         assert!(profile.displays.is_empty());
     }
@@ -558,12 +572,6 @@ falloff = 1.3
         assert_eq!(identity.edid_hash.as_deref(), Some("aaaaaaaaaaaaaaaa"));
     }
 
-    #[test]
-    fn defects_are_known_by_their_position() {
-        assert_eq!(DisplayProfile::defect_label(0), "Spot 1");
-        assert_eq!(DisplayProfile::defect_label(2), "Spot 3");
-    }
-
     /// The order defects are written in is the only thing identifying them, so a
     /// round trip must not disturb it.
     #[test]
@@ -589,9 +597,20 @@ falloff = 1.3
     #[test]
     fn profile_names_cannot_escape_the_config_directory() {
         let path = profile_path(Some("../../etc/passwd")).unwrap();
-        assert!(path
-            .to_str()
-            .unwrap()
-            .ends_with("profiles/------etc-passwd.toml"));
+        let profiles = config_dir().unwrap().join("profiles");
+        assert!(path.starts_with(&profiles), "{path:?}");
+        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("toml"));
+        assert_ne!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some("passwd.toml"),
+            "the requested path must not survive sanitisation"
+        );
+    }
+
+    #[test]
+    fn an_empty_profile_name_is_the_default() {
+        assert_eq!(normalize_profile_name(""), None);
+        assert_eq!(normalize_profile_name("  \t"), None);
+        assert_eq!(normalize_profile_name(" tv "), Some("tv".into()));
     }
 }

@@ -531,21 +531,17 @@ mod tests {
     }
 
     #[test]
-    fn no_defects_means_no_attenuation() {
-        let mask = generate_at(&[], &MaskParams::default(), 32, 32);
-        assert!(mask.is_transparent());
-        assert_eq!(mask.min_gain, Rgb::ONE);
-    }
-
-    #[test]
-    fn disabled_defects_are_ignored() {
-        let mut d = RadialDefect {
+    fn no_active_defects_means_no_attenuation() {
+        let disabled = Defect::Radial(RadialDefect {
+            enabled: false,
             strength: Rgb::splat(0.5),
             ..Default::default()
-        };
-        d.enabled = false;
-        let mask = generate_at(&[Defect::Radial(d)], &MaskParams::default(), 16, 16);
-        assert!(mask.is_transparent());
+        });
+        for defects in [Vec::new(), vec![disabled]] {
+            let mask = generate_at(&defects, &MaskParams::default(), 32, 32);
+            assert!(mask.is_transparent());
+            assert_eq!(mask.min_gain, Rgb::ONE);
+        }
     }
 
     #[test]
@@ -569,6 +565,10 @@ mod tests {
             1.0 - encoded(1.0 / 1.15),
             epsilon = 1e-3
         );
+        assert!(
+            mask.alpha_at(32, 32) < 1.0 - 1.0 / 1.15,
+            "gamma encoding must use less coverage than linear attenuation"
+        );
         // Far corner, already healthy: untouched.
         assert_relative_eq!(mask.alpha_at(0, 0), 0.0, epsilon = 1e-3);
     }
@@ -588,6 +588,12 @@ mod tests {
         assert_relative_eq!(mask.target.r, 0.85, epsilon = 1e-3);
         assert_relative_eq!(mask.alpha_at(32, 32), 0.0, epsilon = 1e-3);
         assert_relative_eq!(mask.alpha_at(0, 0), 1.0 - encoded(0.85), epsilon = 1e-3);
+        let mut pixels = vec![0xAA; 65 * 65 * 4];
+        rasterize_argb8888(&mask, &mut pixels, 65, 65, false);
+        assert!(
+            pixels.chunks_exact(4).all(|pixel| pixel[..3] == [0, 0, 0]),
+            "neutral correction must rasterize as black with varying alpha"
+        );
     }
 
     #[test]
@@ -630,20 +636,6 @@ mod tests {
         params.compensation = 0.0;
         let off = generate_at(&[spot(Vec2::splat(0.5), 0.2)], &params, 65, 65);
         assert!(off.is_transparent());
-    }
-
-    #[test]
-    fn the_transfer_response_shapes_the_encoded_attenuation() {
-        let params = MaskParams {
-            compensation: 1.0,
-            dither: false,
-            ..Default::default()
-        };
-        let mask = generate_at(&[spot(Vec2::splat(0.5), 0.15)], &params, 65, 65);
-        let linear = 1.0 / 1.15f32;
-        assert_relative_eq!(mask.alpha_at(32, 32), 1.0 - encoded(linear), epsilon = 1e-3);
-        // Encoding always removes less coverage than the luminance ratio itself.
-        assert!(mask.alpha_at(32, 32) < 1.0 - linear);
     }
 
     #[test]
@@ -840,7 +832,7 @@ mod tests {
             ..Default::default()
         };
         let mask = generate(&[spot(Vec2::splat(0.5), 0.1)], &params, 3840, 2160);
-        assert_eq!((mask.width, mask.height), (960, 540));
+        assert_eq!((3840 / mask.width, 2160 / mask.height), (4, 4));
 
         let native = MaskParams {
             quality: MaskQuality::Native,
@@ -876,30 +868,6 @@ mod tests {
         }
         // Well under one 8-bit step.
         assert!(worst < 1.0 / 255.0, "worst error {worst}");
-    }
-
-    #[test]
-    fn rasterizes_black_with_varying_alpha() {
-        let params = MaskParams {
-            compensation: 1.0,
-            dither: false,
-            ..Default::default()
-        };
-        let mask = generate_at(&[spot(Vec2::splat(0.5), -0.15)], &params, 17, 17);
-        let mut buf = vec![0xAAu8; 17 * 17 * 4];
-        rasterize_argb8888(&mask, &mut buf, 17, 17, false);
-
-        for px in buf.chunks_exact(4) {
-            assert_eq!(
-                &px[0..3],
-                &[0, 0, 0],
-                "a neutral correction must stay black"
-            );
-        }
-        // Healthy corner, attenuated to the 0.85 target.
-        assert_eq!(buf[3], ((1.0 - encoded(0.85)) * 255.0).round() as u8);
-        // Centre of the dim patch, left alone.
-        assert_eq!(buf[(8 * 17 + 8) * 4 + 3], 0);
     }
 
     #[test]

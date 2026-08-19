@@ -202,38 +202,17 @@ mod tests {
     }
 
     #[test]
-    fn peak_excess_is_strength() {
-        let d = RadialDefect {
-            strength: Rgb::splat(0.12),
-            ..Default::default()
-        };
-        assert_relative_eq!(d.excess_at(d.center).r, 0.12, epsilon = 1e-6);
-        // A spot that emits 12 % too much light.
-        assert_relative_eq!(d.gain_at(d.center).r, 1.12, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn a_negative_strength_describes_a_dim_patch() {
-        let d = RadialDefect {
-            strength: Rgb::splat(-0.12),
-            ..Default::default()
-        };
-        assert_relative_eq!(d.gain_at(d.center).r, 0.88, epsilon = 1e-6);
-        assert_relative_eq!(d.gain_at(Vec2::ZERO).r, 1.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn each_channel_carries_its_own_strength() {
-        let d = unit_spot(Rgb::new(0.2, 0.1, 0.0));
-        let peak = d.excess_at(d.center);
-        assert_relative_eq!(peak.r, 0.2, epsilon = 1e-6);
-        assert_relative_eq!(peak.g, 0.1, epsilon = 1e-6);
-        assert_relative_eq!(peak.b, 0.0, epsilon = 1e-6);
-
-        // The same Gaussian shapes every channel.
-        let off = d.excess_at(Vec2::new(0.6, 0.5));
+    fn radial_profiles_scale_channels_and_support_dim_patches() {
+        let tinted = unit_spot(Rgb::new(0.2, 0.1, 0.0));
+        let peak = tinted.excess_at(tinted.center);
+        assert_eq!(peak, Rgb::new(0.2, 0.1, 0.0));
+        let off = tinted.excess_at(Vec2::new(0.6, 0.5));
         assert_relative_eq!(off.r / peak.r, (-0.5f32).exp(), epsilon = 1e-6);
         assert_relative_eq!(off.g / peak.g, (-0.5f32).exp(), epsilon = 1e-6);
+
+        let dim = unit_spot(Rgb::splat(-0.12));
+        assert_relative_eq!(dim.gain_at(dim.center).r, 0.88, epsilon = 1e-6);
+        assert_relative_eq!(dim.gain_at(Vec2::ZERO).r, 1.0, epsilon = 1e-6);
     }
 
     #[test]

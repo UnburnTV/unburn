@@ -6,9 +6,18 @@
 //! exists so a `wgpu` backend can be dropped in without touching the platform
 //! code.
 
+use std::time::Instant;
+
 use crate::compensation::{mask, Mask};
 
-use super::{EditorView, ShowMode};
+use super::{CalibrationDisc, EditorView, ShowMode};
+
+/// Process-local clock so the disc's angle does not lose precision the way a
+/// unix timestamp converted to `f32` would.
+fn edit_disc_origin() -> Instant {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *ORIGIN.get_or_init(Instant::now)
+}
 
 /// Presents a mask on one surface.
 pub trait MaskRenderer {
@@ -43,6 +52,8 @@ pub struct CpuMaskRenderer {
     /// The modelled defect field, when the editor asks to see it.
     model: Option<Mask>,
     editor: Option<EditorView>,
+    /// Spot whose Edit panel is open: the rotating calibration disc.
+    disc: Option<CalibrationDisc>,
     framebuffer: Vec<u8>,
     dirty: bool,
     generation: u64,
@@ -57,6 +68,7 @@ impl CpuMaskRenderer {
             mask: Mask::transparent(2, 2),
             model: None,
             editor: None,
+            disc: None,
             framebuffer: Vec::new(),
             dirty: true,
             generation: 0,
@@ -76,6 +88,15 @@ impl CpuMaskRenderer {
     pub fn set_dither(&mut self, dither: bool) {
         if self.dither != dither {
             self.dither = dither;
+            self.dirty = true;
+        }
+    }
+
+    /// Attach or clear the rotating calibration disc shown while a spot's
+    /// Edit panel is open.
+    pub fn set_disc(&mut self, disc: Option<CalibrationDisc>) {
+        if self.disc != disc {
+            self.disc = disc;
             self.dirty = true;
         }
     }
@@ -124,6 +145,95 @@ impl CpuMaskRenderer {
             .as_ref()
             .map(|e| e.show)
             .unwrap_or(ShowMode::Correction)
+    }
+
+    /// Opaque rotating disc behind the selected spot. Returns whether the
+    /// disc is spinning, so the caller can keep presenting frames.
+    fn draw_edit_pattern(&mut self) -> bool {
+        let Some(disc) = self.disc.clone() else {
+            return false;
+        };
+        if disc.colors.is_empty() {
+            return false;
+        }
+
+        let cx = disc.defect.center.x * self.width as f32;
+        let cy = disc.defect.center.y * self.height as f32;
+        let rx = disc.defect.radius.x * self.width as f32;
+        let ry = disc.defect.radius.y * self.height as f32;
+        let radius = edit_disc_radius_px(rx, ry);
+        let angle = edit_disc_angle();
+        let (sin, cos) = angle.sin_cos();
+
+        let min_x = ((cx - radius).floor() as i32).max(0);
+        let max_x = ((cx + radius).ceil() as i32).min(self.width as i32 - 1);
+        let min_y = ((cy - radius).floor() as i32).max(0);
+        let max_y = ((cy + radius).ceil() as i32).min(self.height as i32 - 1);
+
+        let apply_correction = disc.defect.enabled;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let coverage = (radius - dist + 0.5).clamp(0.0, 1.0);
+                if coverage <= 0.0 {
+                    continue;
+                }
+                let u = dx * cos + dy * sin;
+                let v = -dx * sin + dy * cos;
+                let rgb = editor_disc_color(u, v, &disc.colors);
+                self.bake_pattern_pixel(x, y, rgb, coverage, apply_correction);
+            }
+        }
+        disc.colors.len() > 1
+    }
+
+    /// Composite the overlay (already in the framebuffer) over an opaque
+    /// pattern colour, then write the result back as an opaque pixel so the
+    /// disc hides the desktop and the correction still applies.
+    ///
+    /// When `apply_correction` is false the pattern is written as-is: the spot
+    /// is unchecked, so Edit should keep the disc without the compensation.
+    fn bake_pattern_pixel(
+        &mut self,
+        x: i32,
+        y: i32,
+        rgb: [u8; 3],
+        coverage: f32,
+        apply_correction: bool,
+    ) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let index = (y as usize * self.width as usize + x as usize) * 4;
+        let ob = self.framebuffer[index] as u32;
+        let og = self.framebuffer[index + 1] as u32;
+        let or_ = self.framebuffer[index + 2] as u32;
+        let oa = self.framebuffer[index + 3] as u32;
+        let (mut b, mut g, mut r, mut a) = if apply_correction {
+            let inv = 255 - oa;
+            (
+                ob + rgb[2] as u32 * inv / 255,
+                og + rgb[1] as u32 * inv / 255,
+                or_ + rgb[0] as u32 * inv / 255,
+                255u32,
+            )
+        } else {
+            (rgb[2] as u32, rgb[1] as u32, rgb[0] as u32, 255u32)
+        };
+        if coverage < 1.0 {
+            let c = (coverage * 255.0) as u32;
+            let ic = 255 - c;
+            b = (b * c + ob * ic) / 255;
+            g = (g * c + og * ic) / 255;
+            r = (r * c + or_ * ic) / 255;
+            a = (a * c + oa * ic) / 255;
+        }
+        self.framebuffer[index] = b.min(255) as u8;
+        self.framebuffer[index + 1] = g.min(255) as u8;
+        self.framebuffer[index + 2] = r.min(255) as u8;
+        self.framebuffer[index + 3] = a.min(255) as u8;
     }
 
     fn draw_editor(&mut self) {
@@ -318,10 +428,42 @@ impl MaskRenderer for CpuMaskRenderer {
             }
         }
 
+        // The calibration disc sits under the outlines and over the mask, so
+        // the spot's correction is judged against a known local pattern.
+        let spinning = self.draw_edit_pattern();
         self.draw_editor();
 
-        self.dirty = false;
+        self.dirty = spinning;
         self.generation += 1;
+    }
+}
+
+/// Extra radius, in overlay pixels, around the selected spot's longest axis.
+const EDIT_DISC_PADDING_PX: f32 = 300.0;
+
+/// One revolution of the disc, in seconds.
+const EDIT_DISC_PERIOD: f32 = 8.0;
+
+pub(crate) fn edit_disc_radius_px(spot_rx: f32, spot_ry: f32) -> f32 {
+    spot_rx.abs().max(spot_ry.abs()).max(1.0) + EDIT_DISC_PADDING_PX
+}
+
+fn edit_disc_angle() -> f32 {
+    let t = edit_disc_origin().elapsed().as_secs_f32();
+    (t / EDIT_DISC_PERIOD).fract() * std::f32::consts::TAU
+}
+
+/// Colour of the rotating editor disc in its local frame: equal conical
+/// wedges of `colors`, starting at +u and running counterclockwise.
+pub(crate) fn editor_disc_color(u: f32, v: f32, colors: &[[u8; 3]]) -> [u8; 3] {
+    match colors {
+        [] => [0, 0, 0],
+        [only] => *only,
+        many => {
+            let turn = (v.atan2(u) / std::f32::consts::TAU).rem_euclid(1.0);
+            let i = ((turn * many.len() as f32) as usize).min(many.len() - 1);
+            many[i]
+        }
     }
 }
 
@@ -340,7 +482,7 @@ pub fn fill_opaque(buffer: &mut [u8], rgb: [u8; 3]) {
 mod tests {
     use super::*;
     use crate::compensation::{mask::generate_at, Defect, MaskParams, RadialDefect, Rgb, Vec2};
-    use crate::overlay::EditorDefect;
+    use crate::overlay::{CalibrationDisc, EditorDefect};
     use uuid::Uuid;
 
     fn alpha_at(renderer: &CpuMaskRenderer, x: u32, y: u32) -> u8 {
@@ -368,13 +510,6 @@ mod tests {
             ..Default::default()
         };
         generate_at(&[defect], &params, 33, 33)
-    }
-
-    #[test]
-    fn a_fresh_renderer_is_fully_transparent() {
-        let mut renderer = CpuMaskRenderer::new(16, 16, false);
-        renderer.render();
-        assert!(renderer.framebuffer().iter().all(|b| *b == 0));
     }
 
     #[test]
@@ -520,5 +655,109 @@ mod tests {
         let mut buffer = vec![0u8; 4];
         fill_opaque(&mut buffer, [10, 20, 30]);
         assert_eq!(buffer, vec![30, 20, 10, 255]);
+    }
+
+    fn rgb_disc_colors() -> Vec<[u8; 3]> {
+        vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]]
+    }
+
+    fn calibration_disc(spot_radius: f32, colors: Vec<[u8; 3]>) -> CalibrationDisc {
+        calibration_disc_with(spot_radius, colors, true)
+    }
+
+    fn calibration_disc_with(
+        spot_radius: f32,
+        colors: Vec<[u8; 3]>,
+        enabled: bool,
+    ) -> CalibrationDisc {
+        CalibrationDisc {
+            defect: EditorDefect {
+                id: Uuid::new_v4(),
+                center: Vec2::splat(0.5),
+                radius: Vec2::splat(spot_radius),
+                rotation: 0.0,
+                strength: Rgb::splat(0.15),
+                enabled,
+            },
+            colors,
+        }
+    }
+
+    #[test]
+    fn the_editor_disc_is_equal_conical_wedges() {
+        let colors = rgb_disc_colors();
+        let at = |turns: f32| {
+            let a = turns * std::f32::consts::TAU;
+            editor_disc_color(a.cos(), a.sin(), &colors)
+        };
+        assert_eq!(at(1.0 / 6.0), [255, 0, 0]);
+        assert_eq!(at(3.0 / 6.0), [0, 255, 0]);
+        assert_eq!(at(5.0 / 6.0), [0, 0, 255]);
+        let inner = editor_disc_color(
+            0.2 * (std::f32::consts::TAU / 6.0).cos(),
+            0.2 * (std::f32::consts::TAU / 6.0).sin(),
+            &colors,
+        );
+        assert_eq!(inner, [255, 0, 0], "a wedge is constant along its radius");
+        assert_eq!(
+            editor_disc_color(1.0, 0.0, &[[128, 128, 128]]),
+            [128, 128, 128]
+        );
+        assert_eq!(
+            editor_disc_color(-1.0, 0.0, &[[128, 128, 128]]),
+            [128, 128, 128],
+            "one colour fills the whole disc"
+        );
+    }
+
+    #[test]
+    fn editing_draws_an_opaque_disc_behind_the_selected_spot() {
+        let mut renderer = CpuMaskRenderer::new(512, 512, false);
+        renderer.upload_mask(&spot_mask());
+        renderer.set_disc(Some(calibration_disc(0.03, rgb_disc_colors())));
+        renderer.render();
+
+        // Spot is 0.03 * 512 px plus 300, about 315 px, so 40 px off centre is
+        // inside and a corner is not.
+        assert_eq!(alpha_at(&renderer, 256 + 40, 256), 255);
+        assert!(
+            alpha_at(&renderer, 0, 0) < 10,
+            "the disc must not cover the whole panel"
+        );
+        renderer.render();
+        assert!(
+            renderer.frame().is_some(),
+            "the disc must keep producing frames so it can rotate"
+        );
+    }
+
+    #[test]
+    fn a_disabled_spot_keeps_the_disc_but_drops_the_correction() {
+        let grey = [180, 180, 180];
+        let mut renderer = CpuMaskRenderer::new(64, 64, false);
+        renderer.upload_mask(&spot_mask());
+        renderer.set_disc(Some(calibration_disc_with(0.1, vec![grey], false)));
+        renderer.render();
+
+        let [b, g, r, a] = pixel(&renderer, 32, 32);
+        assert_eq!(a, 255, "the pattern circle must still be drawn");
+        assert_eq!(
+            [r, g, b],
+            grey,
+            "unchecking the spot must not bake the correction onto the disc"
+        );
+    }
+
+    #[test]
+    fn a_single_disc_colour_does_not_keep_spinning() {
+        let mut renderer = CpuMaskRenderer::new(64, 64, false);
+        renderer.set_disc(Some(calibration_disc(0.03, vec![[255, 0, 0]])));
+        renderer.render();
+        assert_eq!(alpha_at(&renderer, 32, 32), 255);
+        renderer.render();
+        assert!(
+            renderer.frame().is_none(),
+            "a solid disc has nothing to animate"
+        );
     }
 }

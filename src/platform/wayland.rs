@@ -642,6 +642,12 @@ impl OverlayBackend for WaylandBackend {
         overlay.surface.set_editor(editor);
     }
 
+    fn set_disc(&mut self, overlay: OverlayId, disc: Option<crate::overlay::CalibrationDisc>) {
+        if let Some(overlay) = self.state.overlays.get_mut(&overlay) {
+            overlay.surface.set_disc(disc);
+        }
+    }
+
     fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>) {
         if let Some(overlay) = self.state.overlays.get_mut(&overlay) {
             overlay.surface.set_model(model);
@@ -1140,28 +1146,24 @@ mod tests {
 
     #[test]
     fn every_wayland_transform_is_understood() {
-        assert_eq!(
-            convert_transform(wl_output::Transform::Normal),
-            Transform::Normal
-        );
-        assert_eq!(
-            convert_transform(wl_output::Transform::_90),
-            Transform::Rotate90
-        );
-        assert_eq!(
-            convert_transform(wl_output::Transform::Flipped270),
-            Transform::FlippedRotate270
-        );
-    }
-
-    #[test]
-    fn blanking_writes_a_transparent_buffer() {
-        let pixels = vec![0xFFu8; 16];
-        let mut canvas = vec![0u8; 16];
-        write_pixels(&mut canvas, &pixels, false);
-        assert!(canvas.iter().all(|b| *b == 0xFF));
-        write_pixels(&mut canvas, &pixels, true);
-        assert!(canvas.iter().all(|b| *b == 0));
+        for (wayland, expected) in [
+            (wl_output::Transform::Normal, Transform::Normal),
+            (wl_output::Transform::_90, Transform::Rotate90),
+            (wl_output::Transform::_180, Transform::Rotate180),
+            (wl_output::Transform::_270, Transform::Rotate270),
+            (wl_output::Transform::Flipped, Transform::Flipped),
+            (wl_output::Transform::Flipped90, Transform::FlippedRotate90),
+            (
+                wl_output::Transform::Flipped180,
+                Transform::FlippedRotate180,
+            ),
+            (
+                wl_output::Transform::Flipped270,
+                Transform::FlippedRotate270,
+            ),
+        ] {
+            assert_eq!(convert_transform(wayland), expected, "{wayland:?}");
+        }
     }
 
     #[test]

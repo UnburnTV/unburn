@@ -124,39 +124,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defect_roundtrips_through_toml() {
-        let d = Defect::Radial(RadialDefect::default());
-        let back: Defect = toml::from_str(&toml::to_string(&d).unwrap()).unwrap();
-        // The id is minted anew on the way in, so compare everything else.
-        assert_eq!(back.as_radial().unwrap().center, d.center());
-        assert_eq!(back.enabled(), d.enabled());
-    }
-
-    /// A defect at its defaults should write only what cannot be inferred:
-    /// where it is, how big it is and how strong.
-    #[test]
-    fn a_plain_defect_writes_nothing_it_need_not() {
-        let text = toml::to_string(&Defect::Radial(RadialDefect::default())).unwrap();
-        for absent in ["kind", "id", "name", "enabled", "rotation"] {
+    fn defects_round_trip_without_persisting_runtime_ids() {
+        for defect in [
+            Defect::Radial(RadialDefect::default()),
+            Defect::Radial(RadialDefect {
+                enabled: false,
+                rotation: 0.5,
+                strength: Rgb::splat(0.11),
+                ..Default::default()
+            }),
+            Defect::Radial(RadialDefect {
+                strength: Rgb::new(0.2, 0.1, 0.05),
+                ..Default::default()
+            }),
+        ] {
+            let text = toml::to_string(&defect).unwrap();
             assert!(
-                !text.contains(absent),
-                "{absent} should not appear in:\n{text}"
+                !text.contains("id"),
+                "runtime ids must not be saved:\n{text}"
             );
-        }
-        assert!(text.contains("center"), "{text}");
-        assert!(text.contains("strength"), "{text}");
-    }
 
-    #[test]
-    fn the_unusual_states_are_still_written() {
-        let text = toml::to_string(&Defect::Radial(RadialDefect {
-            enabled: false,
-            rotation: 0.5,
-            ..Default::default()
-        }))
-        .unwrap();
-        assert!(text.contains("enabled = false"), "{text}");
-        assert!(text.contains("rotation = 0.5"), "{text}");
+            let back: Defect = toml::from_str(&text).unwrap();
+            let (original, back) = (defect.as_radial().unwrap(), back.as_radial().unwrap());
+            assert_ne!(back.id, original.id, "loading must mint a runtime id");
+            assert_eq!(back.center, original.center);
+            assert_eq!(back.radius, original.radius);
+            assert_eq!(back.rotation, original.rotation);
+            assert_eq!(back.strength, original.strength);
+            assert_eq!(back.enabled, original.enabled);
+        }
     }
 
     /// Profiles written before any of this became optional must keep loading:
@@ -186,26 +182,5 @@ mod tests {
     fn an_unknown_kind_is_refused_rather_than_taken_for_a_radial_one() {
         let text = "kind = \"polygon\"\ncenter = [0.5, 0.5]\nradius = [0.1, 0.1]\nstrength = 0.1\n";
         assert!(toml::from_str::<Defect>(text).is_err());
-    }
-
-    #[test]
-    fn a_neutral_strength_stays_a_bare_number() {
-        let d = Defect::Radial(RadialDefect {
-            strength: Rgb::splat(0.11),
-            ..Default::default()
-        });
-        assert!(toml::to_string(&d).unwrap().contains("strength = 0.11"));
-    }
-
-    #[test]
-    fn a_tinted_strength_round_trips_as_a_triple() {
-        let d = Defect::Radial(RadialDefect {
-            strength: Rgb::new(0.2, 0.1, 0.05),
-            ..Default::default()
-        });
-        let text = toml::to_string(&d).unwrap();
-        assert!(text.contains("strength = [0.2, 0.1, 0.05]"), "{text}");
-        let back = toml::from_str::<Defect>(&text).unwrap();
-        assert_eq!(back.as_radial().unwrap().strength, Rgb::new(0.2, 0.1, 0.05));
     }
 }

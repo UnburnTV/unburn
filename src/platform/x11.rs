@@ -977,6 +977,13 @@ impl OverlayBackend for X11Backend {
         entry.surface.set_editor(editor);
     }
 
+    fn set_disc(&mut self, overlay: OverlayId, disc: Option<crate::overlay::CalibrationDisc>) {
+        let Some(entry) = self.overlays.get_mut(&overlay) else {
+            return;
+        };
+        entry.surface.set_disc(disc);
+    }
+
     fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>) {
         if let Some(entry) = self.overlays.get_mut(&overlay) {
             entry.surface.set_model(model);

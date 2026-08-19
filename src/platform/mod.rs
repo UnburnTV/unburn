@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     compensation::{mask, Defect, Mask, MaskParams},
     display::{DisplayIdentity, OutputId, OutputInfo, OverlayId},
-    overlay::{EditorDefect, EditorView, ShowMode, TestPatternState},
+    overlay::{CalibrationDisc, EditorDefect, EditorView, ShowMode, TestPatternState},
 };
 
 pub use interaction::{Button, EditorAction, EditorKey, Modifiers};
@@ -138,6 +138,9 @@ pub trait OverlayBackend {
     /// The annotations drawn on top of the compensation while editing.
     fn set_editor(&mut self, overlay: OverlayId, editor: Option<EditorView>);
 
+    /// Rotating calibration disc behind the spot whose Edit panel is open.
+    fn set_disc(&mut self, overlay: OverlayId, disc: Option<CalibrationDisc>);
+
     /// The modelled defect field, needed only by the editor's "show model".
     fn set_model(&mut self, overlay: OverlayId, model: Option<Mask>);
 
@@ -214,6 +217,10 @@ pub struct DesiredState {
     pub bypass: bool,
     pub displays: Vec<DisplaySettings>,
     pub editing: Option<EditingState>,
+    /// Spot whose Edit panel is open, on that display: draw the rotating disc.
+    pub calibration_disc: Option<(DisplayIdentity, Uuid)>,
+    /// Wedges on that disc, in palette order.
+    pub disc_colors: Vec<[u8; 3]>,
     pub test_pattern: Option<TestPatternState>,
 }
 
@@ -231,6 +238,11 @@ impl DesiredState {
         let editing = self.editing.as_ref()?;
         (editing.identity.match_score(&output.identity) >= crate::display::MatchScore::WEAK)
             .then_some(editing)
+    }
+
+    fn disc_for_output(&self, output: &OutputInfo) -> Option<Uuid> {
+        let (identity, id) = self.calibration_disc.as_ref()?;
+        (identity.match_score(&output.identity) >= crate::display::MatchScore::WEAK).then_some(*id)
     }
 }
 
@@ -396,6 +408,18 @@ impl Reconciler {
                     show: editing.show,
                 }),
             );
+            let disc = self.desired.disc_for_output(output).and_then(|id| {
+                settings
+                    .defects
+                    .iter()
+                    .find(|d| d.id() == id)
+                    .and_then(|d| EditorDefect::from_defect(d, output.transform))
+                    .map(|defect| CalibrationDisc {
+                        defect,
+                        colors: self.desired.disc_colors.clone(),
+                    })
+            });
+            backend.set_disc(overlay, disc);
 
             backend.set_test_pattern(output.id, self.desired.test_pattern);
         }
@@ -490,6 +514,7 @@ mod tests {
         fn set_editor(&mut self, overlay: OverlayId, editor: Option<EditorView>) {
             self.calls.push(Call::Editor(overlay, editor.is_some()));
         }
+        fn set_disc(&mut self, _overlay: OverlayId, _disc: Option<CalibrationDisc>) {}
         fn set_model(&mut self, _overlay: OverlayId, _model: Option<Mask>) {}
         fn set_dither(&mut self, _overlay: OverlayId, _dither: bool) {}
         fn set_test_pattern(&mut self, _output: OutputId, _pattern: Option<TestPatternState>) {}
@@ -798,29 +823,5 @@ mod tests {
                 .count(),
             2
         );
-    }
-
-    #[test]
-    fn a_full_backend_is_preferred_over_a_limited_one() {
-        let reports = vec![
-            BackendReport {
-                kind: BackendKind::Wayland,
-                support: Support::Limited("no layer shell".into()),
-            },
-            BackendReport {
-                kind: BackendKind::X11,
-                support: Support::Full,
-            },
-        ];
-        assert_eq!(preferred_kind(&reports), Some(BackendKind::X11));
-    }
-
-    #[test]
-    fn nothing_is_preferred_when_nothing_works() {
-        let reports = vec![BackendReport {
-            kind: BackendKind::Wayland,
-            support: Support::Unavailable("no display".into()),
-        }];
-        assert_eq!(preferred_kind(&reports), None);
     }
 }

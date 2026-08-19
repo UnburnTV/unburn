@@ -208,13 +208,30 @@ fn run(
         }
 
         pending.clear();
+        let animating = reconciler.desired().calibration_disc.is_some();
+        if animating {
+            // The editor disc keeps spinning without a DesiredState change, so
+            // present again even when the reconciler had nothing to do.
+            if let Err(error) = backend.flush() {
+                error!(%error, "could not present the editor disc");
+                events
+                    .send(BackendEvent::Disconnected(error.to_string()))
+                    .ok();
+                notify();
+                break;
+            }
+        }
+
         // The timeout is only a safety net; everything interesting arrives
-        // either on the display server's socket or on the wake pipe.
-        match backend.poll_events(
-            wake_read.as_fd(),
-            Some(Duration::from_secs(30)),
-            &mut pending,
-        ) {
+        // either on the display server's socket or on the wake pipe. While the
+        // on-screen editor is up the disc is rotating, so we wake often enough
+        // to keep it moving.
+        let timeout = if animating {
+            Some(Duration::from_millis(16))
+        } else {
+            Some(Duration::from_secs(30))
+        };
+        match backend.poll_events(wake_read.as_fd(), timeout, &mut pending) {
             Ok(()) => {}
             Err(error) => {
                 warn!(%error, "the display server connection failed");

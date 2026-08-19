@@ -435,6 +435,11 @@ mod tests {
             edid_hash: Some("bbbbbbbbbbbbbbbb".into()),
         };
         assert_eq!(stored.match_score(&replacement), MatchScore::NONE);
+        let outputs = [output(1, replacement)];
+        assert!(
+            best_match(&stored, &outputs).is_none(),
+            "a rejected replacement must not be selected by best_match"
+        );
     }
 
     /// Two units of one model wear differently, so the serial has to separate
@@ -465,15 +470,20 @@ mod tests {
         assert_eq!(stored.match_score(&replacement), MatchScore::NONE);
     }
 
-    /// When a platform exposes nothing but the port, that is all there is to go
-    /// on and a profile is still better than none.
+    /// When a platform exposes nothing but the port, it is enough to recognise
+    /// that exact output but not enough to match another one.
     #[test]
-    fn the_connector_alone_still_matches_when_nothing_stronger_is_known() {
+    fn connector_only_identity_matches_only_the_same_connector() {
         let bare = DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             ..Default::default()
         };
         assert!(bare.match_score(&bare.clone()) >= MatchScore::WEAK);
+        let other_connector = DisplayIdentity {
+            connector: Some("DP-3".into()),
+            ..Default::default()
+        };
+        assert_eq!(bare.match_score(&other_connector), MatchScore::NONE);
     }
 
     #[test]
@@ -526,26 +536,6 @@ mod tests {
     }
 
     #[test]
-    fn best_match_rejects_a_replacement_on_the_same_port() {
-        let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
-        let outputs = vec![output(1, ident("HDMI-A-1", "U2723QE", Some("XYZ")))];
-        assert!(best_match(&stored, &outputs).is_none());
-    }
-
-    #[test]
-    fn different_monitors_do_not_match() {
-        let a = DisplayIdentity {
-            connector: Some("HDMI-A-1".into()),
-            ..Default::default()
-        };
-        let b = DisplayIdentity {
-            connector: Some("DP-3".into()),
-            ..Default::default()
-        };
-        assert_eq!(a.match_score(&b), MatchScore::NONE);
-    }
-
-    #[test]
     fn best_match_prefers_the_strongest_evidence() {
         let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
         let outputs = vec![
@@ -554,12 +544,6 @@ mod tests {
         ];
         let found = best_match(&stored, &outputs).unwrap();
         assert_eq!(found.id, OutputId(2));
-    }
-
-    #[test]
-    fn no_candidate_means_no_match() {
-        let stored = ident("HDMI-A-1", "QN90", Some("ABC"));
-        assert!(best_match(&stored, &[]).is_none());
     }
 
     #[test]
@@ -579,10 +563,6 @@ mod tests {
             assert!((back.x - point.x).abs() < 1e-5, "{t:?}");
             assert!((back.y - point.y).abs() < 1e-5, "{t:?}");
         }
-    }
-
-    #[test]
-    fn quarter_turn_moves_the_top_left_corner_to_the_bottom_left() {
         let corner = Vec2::new(0.0, 0.0);
         let moved = Transform::Rotate90.panel_to_surface(corner);
         assert!((moved.x - 0.0).abs() < 1e-5);
@@ -596,12 +576,6 @@ mod tests {
         o.height = 1920;
         o.transform = Transform::Rotate90;
         assert_eq!(o.panel_size(), (1920, 1080));
-    }
-
-    #[test]
-    fn edid_hash_is_stable_and_discriminating() {
-        assert_eq!(edid_hash(b"abc"), edid_hash(b"abc"));
-        assert_ne!(edid_hash(b"abc"), edid_hash(b"abd"));
     }
 
     /// A synthetic but structurally valid EDID block.

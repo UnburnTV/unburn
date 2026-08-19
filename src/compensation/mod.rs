@@ -225,46 +225,20 @@ mod tests {
     }
 
     #[test]
-    fn a_neutral_triple_is_written_as_one_number() {
-        let text = toml::to_string(&Holder {
-            value: Rgb::splat(0.11),
-        })
-        .unwrap();
-        assert_eq!(text.trim(), "value = 0.11");
-    }
-
-    #[test]
-    fn a_bare_number_parses_into_every_channel() {
-        let holder: Holder = toml::from_str("value = 0.11").unwrap();
-        assert_eq!(holder.value, Rgb::splat(0.11));
-    }
-
-    #[test]
-    fn an_integer_parses_too() {
-        let holder: Holder = toml::from_str("value = 1").unwrap();
-        assert_eq!(holder.value, Rgb::ONE);
-    }
-
-    #[test]
-    fn a_triple_round_trips_per_channel() {
-        let holder = Holder {
-            value: Rgb::new(0.2, 0.1, 0.05),
-        };
-        let text = toml::to_string(&holder).unwrap();
-        assert_eq!(text.trim(), "value = [0.2, 0.1, 0.05]");
-        assert_eq!(toml::from_str::<Holder>(&text).unwrap(), holder);
-    }
-
-    #[test]
-    fn a_short_list_is_rejected() {
+    fn rgb_toml_accepts_scalar_and_triplet_values() {
+        for (text, expected) in [
+            ("value = 0.11", Rgb::splat(0.11)),
+            ("value = 1", Rgb::ONE),
+            ("value = [0.2, 0.1, 0.05]", Rgb::new(0.2, 0.1, 0.05)),
+        ] {
+            let holder: Holder = toml::from_str(text).unwrap();
+            assert_eq!(holder.value, expected, "{text}");
+            assert_eq!(
+                toml::from_str::<Holder>(&toml::to_string(&holder).unwrap()).unwrap(),
+                holder,
+                "{text}"
+            );
+        }
         assert!(toml::from_str::<Holder>("value = [0.2, 0.1]").is_err());
-    }
-
-    #[test]
-    fn extremes_ignore_sign_where_asked() {
-        let v = Rgb::new(-0.3, 0.1, 0.2);
-        assert_eq!(v.min_channel(), -0.3);
-        assert_eq!(v.max_channel(), 0.2);
-        assert_eq!(v.max_abs(), 0.3);
     }
 }

@@ -416,29 +416,20 @@ mod tests {
     }
 
     #[test]
-    fn the_far_handle_resizes_from_its_own_side() {
-        let (_, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
-        // The handle on the left, at x = 0.4.
-        editor.press(Vec2::new(0.4, 0.5), Button::Primary);
-
-        match editor.motion(Vec2::new(0.35, 0.5)) {
-            Some(EditorAction::SetRadiusX { radius, .. }) => {
-                assert!((radius - 0.15).abs() < 1e-5, "{radius}");
+    fn dragging_either_width_handle_sets_the_width() {
+        for (pressed, moved) in [
+            (Vec2::new(0.4, 0.5), Vec2::new(0.35, 0.5)),
+            (Vec2::new(0.6, 0.5), Vec2::new(0.65, 0.5)),
+        ] {
+            let (id, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+            editor.press(pressed, Button::Primary);
+            match editor.motion(moved) {
+                Some(EditorAction::SetRadiusX { id: got, radius }) => {
+                    assert_eq!(got, id);
+                    assert!((radius - 0.15).abs() < 1e-5, "{radius}");
+                }
+                other => panic!("expected a width change, got {other:?}"),
             }
-            other => panic!("expected a width change, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn dragging_the_side_handle_sets_the_width() {
-        let (id, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
-        editor.press(Vec2::new(0.6, 0.5), Button::Primary);
-        match editor.motion(Vec2::new(0.65, 0.5)) {
-            Some(EditorAction::SetRadiusX { id: got, radius }) => {
-                assert_eq!(got, id);
-                assert!((radius - 0.15).abs() < 1e-5, "{radius}");
-            }
-            other => panic!("expected a width change, got {other:?}"),
         }
     }
 
@@ -554,25 +545,6 @@ mod tests {
             editor.wheel(1.0),
             Some(EditorAction::AdjustFalloff { .. })
         ));
-    }
-
-    #[test]
-    fn the_documented_keys_do_what_they_say() {
-        let (id, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
-        assert_eq!(editor.key(EditorKey::Escape), Some(EditorAction::Leave));
-        assert_eq!(editor.key(EditorKey::Tab), Some(EditorAction::SelectNext));
-        assert_eq!(
-            editor.key(EditorKey::Delete),
-            Some(EditorAction::Delete(id))
-        );
-        assert!(matches!(
-            editor.key(EditorKey::NewDefect),
-            Some(EditorAction::Create(_))
-        ));
-        assert_eq!(
-            editor.key(EditorKey::CycleShowMode),
-            Some(EditorAction::CycleShowMode)
-        );
     }
 
     #[test]

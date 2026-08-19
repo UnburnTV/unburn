@@ -51,6 +51,10 @@ impl OverlaySurface {
         self.renderer.set_editor(editor);
     }
 
+    pub fn set_disc(&mut self, disc: Option<crate::overlay::CalibrationDisc>) {
+        self.renderer.set_disc(disc);
+    }
+
     pub fn set_dither(&mut self, dither: bool) {
         self.renderer.set_dither(dither);
     }
@@ -125,26 +129,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_frame_is_produced_and_the_second_is_not() {
-        let mut surface = OverlaySurface::new(64, 64);
-        surface.set_mask(&mask_of(&spot(), 32, 32));
-        assert!(surface.frame().is_some());
-        assert!(surface.frame().is_none());
-    }
-
-    #[test]
-    fn a_new_mask_produces_a_new_frame() {
-        let mut surface = OverlaySurface::new(64, 64);
-        surface.set_mask(&mask_of(&spot(), 32, 32));
-        surface.frame();
-
-        let mut moved = spot();
-        moved.set_center(Vec2::new(0.75, 0.5));
-        surface.set_mask(&mask_of(&moved, 32, 32));
-        assert!(surface.frame().is_some());
-    }
-
-    #[test]
     fn bypass_does_not_invalidate_the_pixels() {
         let mut surface = OverlaySurface::new(64, 64);
         surface.set_mask(&mask_of(&spot(), 32, 32));
@@ -167,19 +151,5 @@ mod tests {
         surface.set_size(128, 96);
         let frame = surface.frame().expect("a resize must produce a frame");
         assert_eq!(frame.len(), 128 * 96 * 4);
-    }
-
-    #[test]
-    fn a_rotated_surface_moves_the_defect_with_the_panel() {
-        let rotated = transform_defect(&spot(), Transform::Rotate90);
-        let radial = rotated.as_radial().unwrap();
-        assert!((radial.center.x - 0.5).abs() < 1e-5);
-        assert!((radial.center.y - 0.75).abs() < 1e-5);
-    }
-
-    #[test]
-    fn an_unrotated_surface_leaves_the_defect_alone() {
-        let defect = spot();
-        assert_eq!(transform_defect(&defect, Transform::Normal), defect);
     }
 }

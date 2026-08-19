@@ -5,7 +5,6 @@
 //! the overlay backend.
 
 pub mod main_window;
-pub mod test_pattern;
 
 use std::{
     sync::mpsc::Receiver,
@@ -29,8 +28,12 @@ pub struct UiState {
     pub last_cycle: Option<Instant>,
     /// Show one strength slider per colour channel, even for a neutral spot.
     pub separate_channels: bool,
-    /// Which spot's strength/falloff/rotation group is expanded.
+    /// Which spot's Edit panel is expanded.
     pub params_open: Option<uuid::Uuid>,
+    /// Contents of the profile name field. Empty means the default profile.
+    pub profile_draft: String,
+    /// Path last copied to the clipboard, so the copy control can stay a check.
+    pub path_copied: Option<String>,
 }
 
 impl UiState {
@@ -38,7 +41,7 @@ impl UiState {
         self.message = Some((Instant::now(), text.into()));
     }
 
-    fn current_message(&self) -> Option<&str> {
+    pub(crate) fn current_message(&self) -> Option<&str> {
         let (at, text) = self.message.as_ref()?;
         (at.elapsed() < Duration::from_secs(6)).then_some(text.as_str())
     }
@@ -64,6 +67,9 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
         "unburn",
         options,
         Box::new(move |cc| {
+            cc.egui_ctx
+                .all_styles_mut(|style| main_window::apply_ui_scale(style));
+
             // Anything the backend or the control socket reports arrives on
             // this channel; forward it as a repaint so the window stays asleep
             // in between.
@@ -78,9 +84,12 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
                 .ok();
 
             Ok(Box::new(UnburnGui {
+                ui: UiState {
+                    profile_draft: app.profile_name().unwrap_or("").to_string(),
+                    ..Default::default()
+                },
                 app,
                 server,
-                ui: UiState::default(),
             }))
         }),
     )
@@ -114,10 +123,7 @@ impl eframe::App for UnburnGui {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if let Some(message) = self.ui.current_message().map(str::to_owned) {
-            egui::Panel::bottom("notice").show(ui, |ui| {
-                ui.label(message);
-            });
+        if self.ui.current_message().is_some() {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
 
@@ -139,6 +145,9 @@ impl UnburnGui {
     /// The calibration keys work from the window too, not only from the
     /// overlay, so a user can keep their hands in one place.
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        if self.ui.confirm_delete.is_some() {
+            return;
+        }
         let (space, left, right, escape) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::Space),

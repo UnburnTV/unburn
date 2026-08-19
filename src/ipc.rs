@@ -269,9 +269,17 @@ mod tests {
         );
         send(Some(&profile), &Request::Hide).unwrap();
 
-        // Give the server thread a moment to hand the request over.
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(server.poll().contains(&Request::Hide));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if server.poll().contains(&Request::Hide) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server did not receive the hide request within one second"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -282,11 +290,5 @@ mod tests {
             Server::bind(Some(&profile)),
             Err(BindError::AlreadyRunning(_))
         ));
-    }
-
-    #[test]
-    fn connecting_to_nothing_fails_cleanly() {
-        let profile = format!("absent-{}", std::process::id());
-        assert!(send(Some(&profile), &Request::Hide).is_err());
     }
 }

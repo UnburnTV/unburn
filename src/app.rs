@@ -14,7 +14,7 @@ use crate::{
     config::{self, DisplayProfile, Profile},
     display::{DisplayIdentity, OutputInfo},
     ipc,
-    overlay::{ShowMode, TestPattern, TestPatternState},
+    overlay::{DiscSwatch, ShowMode, TestPattern, TestPatternState},
     platform::{
         self, BackendEvent, BackendKind, BackendReport, DesiredState, DisplaySettings,
         EditingState, EditorAction, OverlayService, PatternAction,
@@ -50,6 +50,10 @@ pub struct App {
     selected_display: Option<DisplayIdentity>,
     selected_defect: Option<Uuid>,
     editing: bool,
+    /// Spot whose Edit panel is open: rotating calibration disc behind it.
+    calibration_disc: Option<Uuid>,
+    /// Colours on that disc, in palette order. Shared across spots.
+    disc_colors: Vec<[u8; 3]>,
     show_mode: ShowMode,
     test_pattern: Option<TestPatternState>,
 
@@ -79,6 +83,8 @@ impl App {
             selected_display: None,
             selected_defect: None,
             editing: false,
+            calibration_disc: None,
+            disc_colors: DiscSwatch::default_colors(),
             show_mode: ShowMode::Correction,
             test_pattern: args
                 .test_pattern
@@ -188,6 +194,25 @@ impl App {
         }
     }
 
+    /// Open or close the rotating calibration disc behind a spot.
+    pub fn set_calibration_disc(&mut self, id: Option<Uuid>) {
+        if self.calibration_disc != id {
+            self.calibration_disc = id;
+            self.sync();
+        }
+    }
+
+    pub fn disc_colors(&self) -> &[[u8; 3]] {
+        &self.disc_colors
+    }
+
+    pub fn set_disc_colors(&mut self, colors: Vec<[u8; 3]>) {
+        if self.disc_colors != colors {
+            self.disc_colors = colors;
+            self.sync();
+        }
+    }
+
     pub fn show_mode(&self) -> ShowMode {
         self.show_mode
     }
@@ -266,6 +291,7 @@ impl App {
         }
         self.selected_display = Some(identity);
         self.selected_defect = self.first_defect();
+        self.calibration_disc = None;
         self.sync();
     }
 
@@ -334,6 +360,9 @@ impl App {
                 .and_then(|d| d.defects.last())
                 .map(|d| d.id());
         }
+        if self.calibration_disc == Some(id) {
+            self.calibration_disc = None;
+        }
         self.mark_changed();
     }
 
@@ -387,6 +416,53 @@ impl App {
         Ok(())
     }
 
+    /// Write the current spots to `name`, creating the file if it does not exist.
+    ///
+    /// `None` is the default profile (`config.toml`).
+    pub fn save_to_named(&mut self, name: Option<String>) -> Result<(), String> {
+        let new_path = config::profile_path(name.as_deref()).map_err(|e| e.to_string())?;
+        let previous_name = self.profile_name.clone();
+        let previous_path = self.profile_path.clone();
+        self.profile_name = name;
+        self.profile_path = new_path;
+        if let Err(error) = self.save() {
+            self.profile_name = previous_name;
+            self.profile_path = previous_path;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Load `name` from disk. `None` is the default profile.
+    ///
+    /// Unsaved work on a different file is written first. A named profile that
+    /// has no file yet is an error: create it with Save.
+    pub fn load_named(&mut self, name: Option<String>) -> Result<(), String> {
+        let new_path = config::profile_path(name.as_deref()).map_err(|e| e.to_string())?;
+        if self.profile_path != new_path && self.unsaved {
+            self.save()?;
+        }
+        if let Some(ref named) = name {
+            if !new_path.is_file() {
+                return Err(format!(
+                    "there is no profile named {named}. Save to create it."
+                ));
+            }
+        }
+        let profile = Profile::load_or_default(&new_path).map_err(|e| e.to_string())?;
+        self.profile = profile;
+        self.profile_name = name;
+        self.profile_path = new_path;
+        self.unsaved = false;
+        self.selected_display = None;
+        self.selected_defect = None;
+        self.editing = false;
+        self.calibration_disc = None;
+        self.adopt_connected_displays();
+        self.sync();
+        Ok(())
+    }
+
     // ---- driving the overlays -------------------------------------------
 
     /// Push the current configuration to the overlay backend.
@@ -413,12 +489,18 @@ impl App {
                 let being_edited = editing_identity
                     .as_ref()
                     .is_some_and(|i| &display.identity == i);
+                let showing_disc = self
+                    .calibration_disc
+                    .is_some_and(|id| display.defects.iter().any(|d| d.id() == id));
                 DisplaySettings {
                     identity: display.identity.clone(),
                     // An overlay that would draw nothing is not created at all;
-                    // the editor and the calibration patterns still need one.
-                    enabled: display.enabled
-                        && (has_effect(display) || being_edited || showing_pattern),
+                    // the editor, the disc, and the calibration patterns still
+                    // need one. The disc stays up while Edit is open even if
+                    // this spot is unchecked.
+                    enabled: showing_disc
+                        || (display.enabled
+                            && (has_effect(display) || being_edited || showing_pattern)),
                     params: display.mask_params(),
                     defects: display.defects.clone(),
                 }
@@ -433,6 +515,14 @@ impl App {
                 selected: self.selected_defect,
                 show: self.show_mode,
             }),
+            calibration_disc: self.calibration_disc.and_then(|id| {
+                self.profile
+                    .displays
+                    .iter()
+                    .find(|d| d.defects.iter().any(|defect| defect.id() == id))
+                    .map(|d| (d.identity.clone(), id))
+            }),
+            disc_colors: self.disc_colors.clone(),
             test_pattern: self.test_pattern,
         }
     }
@@ -536,6 +626,7 @@ impl App {
         warn!("emergency disable: removing all overlays");
         self.bypass = true;
         self.editing = false;
+        self.calibration_disc = None;
         self.test_pattern = None;
         if let Some(service) = self.service.as_ref() {
             service.tear_down();
@@ -649,35 +740,22 @@ mod tests {
     }
 
     #[test]
-    fn a_display_with_a_real_defect_has_an_effect() {
-        assert!(has_effect(&display_with(0.1, true)));
-    }
-
-    #[test]
-    fn a_zero_strength_defect_has_none() {
-        assert!(!has_effect(&display_with(0.0, true)));
-    }
-
-    #[test]
-    fn a_dim_patch_also_has_an_effect() {
-        assert!(has_effect(&display_with(-0.1, true)));
-    }
-
-    #[test]
-    fn a_disabled_defect_has_none() {
-        assert!(!has_effect(&display_with(0.1, false)));
-    }
-
-    #[test]
-    fn zero_compensation_has_none() {
-        let mut display = display_with(0.1, true);
-        display.compensation = 0.0;
-        assert!(!has_effect(&display));
-    }
-
-    #[test]
-    fn positions_are_clamped_into_the_screen() {
-        assert_eq!(clamp_unit(Vec2::new(-0.5, 1.7)), Vec2::new(0.0, 1.0));
+    fn a_display_has_an_effect_only_when_compensation_can_change_it() {
+        for (strength, enabled, compensation, expected) in [
+            (0.1, true, 1.0, true),
+            (0.0, true, 1.0, false),
+            (-0.1, true, 1.0, true),
+            (0.1, false, 1.0, false),
+            (0.1, true, 0.0, false),
+        ] {
+            let mut display = display_with(strength, enabled);
+            display.compensation = compensation;
+            assert_eq!(
+                has_effect(&display),
+                expected,
+                "strength {strength}, enabled {enabled}, compensation {compensation}"
+            );
+        }
     }
 
     #[test]

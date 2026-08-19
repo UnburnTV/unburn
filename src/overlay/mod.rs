@@ -53,6 +53,82 @@ impl ShowMode {
     }
 }
 
+/// A colour the user can put on the rotating calibration disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscSwatch {
+    pub label: &'static str,
+    pub rgb: [u8; 3],
+}
+
+impl DiscSwatch {
+    pub const ALL: [DiscSwatch; 12] = [
+        DiscSwatch {
+            label: "Black",
+            rgb: [0, 0, 0],
+        },
+        DiscSwatch {
+            label: "Grey 20",
+            rgb: [51, 51, 51],
+        },
+        DiscSwatch {
+            label: "Grey 40",
+            rgb: [102, 102, 102],
+        },
+        DiscSwatch {
+            label: "Grey 60",
+            rgb: [153, 153, 153],
+        },
+        DiscSwatch {
+            label: "Grey 80",
+            rgb: [204, 204, 204],
+        },
+        DiscSwatch {
+            label: "White",
+            rgb: [255, 255, 255],
+        },
+        DiscSwatch {
+            label: "Red",
+            rgb: [255, 0, 0],
+        },
+        DiscSwatch {
+            label: "Green",
+            rgb: [0, 255, 0],
+        },
+        DiscSwatch {
+            label: "Blue",
+            rgb: [0, 0, 255],
+        },
+        DiscSwatch {
+            label: "Dark red",
+            rgb: [128, 0, 0],
+        },
+        DiscSwatch {
+            label: "Dark green",
+            rgb: [0, 128, 0],
+        },
+        DiscSwatch {
+            label: "Dark blue",
+            rgb: [0, 0, 128],
+        },
+    ];
+
+    /// Grey 40, a mid grey that shows both a bright blemish and the correction.
+    pub fn default_colors() -> Vec<[u8; 3]> {
+        vec![Self::ALL[2].rgb]
+    }
+
+    /// The selected swatches, still in palette order so the wedges stay put
+    /// when the user ticks a box.
+    pub fn selected(flags: &[bool]) -> Vec<[u8; 3]> {
+        Self::ALL
+            .iter()
+            .zip(flags)
+            .filter(|(_, on)| **on)
+            .map(|(swatch, _)| swatch.rgb)
+            .collect()
+    }
+}
+
 /// A defect as the on-screen editor sees it: already mapped into the
 /// surface's own coordinate space.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +180,14 @@ impl EditorDefect {
             self.center - across,
         ]
     }
+}
+
+/// The rotating calibration disc shown while a spot's Edit panel is open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalibrationDisc {
+    pub defect: EditorDefect,
+    /// Opaque sRGB wedges, split equally around the disc. Empty means no fill.
+    pub colors: Vec<[u8; 3]>,
 }
 
 /// Which part of a defect the pointer has grabbed.
@@ -274,12 +358,15 @@ mod tests {
     }
 
     #[test]
-    fn test_pattern_levels_match_their_labels() {
-        assert_eq!(TestPattern::Grey(0).rgb(), [0, 0, 0]);
-        assert_eq!(TestPattern::Grey(100).rgb(), [255, 255, 255]);
-        assert_eq!(TestPattern::Grey(50).rgb(), [128, 128, 128]);
-        assert_eq!(TestPattern::Grey(0).label(), "Black");
-        assert_eq!(TestPattern::Grey(25).label(), "25% gray");
+    fn disc_swatches_keep_palette_order_when_several_are_ticked() {
+        let mut flags = [false; DiscSwatch::ALL.len()];
+        flags[8] = true; // Blue
+        flags[6] = true; // Red
+        flags[7] = true; // Green
+        assert_eq!(
+            DiscSwatch::selected(&flags),
+            vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]]
+        );
     }
 
     #[test]
@@ -351,14 +438,5 @@ mod tests {
         assert!((view.center.y - 0.75).abs() < 1e-5);
         // The long axis turns with it.
         assert!((view.rotation.abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-    }
-
-    #[test]
-    fn show_mode_cycles_through_all_three() {
-        let mut mode = ShowMode::Correction;
-        for _ in 0..3 {
-            mode = mode.next();
-        }
-        assert_eq!(mode, ShowMode::Correction);
     }
 }

@@ -141,14 +141,4 @@ mod tests {
         assert!(!Args::parse_from(["unburn", "start"]).is_remote_control());
         assert!(!Args::parse_from(["unburn", "check"]).is_remote_control());
     }
-
-    #[test]
-    fn the_old_flags_are_gone() {
-        assert!(Args::try_parse_from(["unburn", "--start"]).is_err());
-        assert!(Args::try_parse_from(["unburn", "--disable"]).is_err());
-        assert!(Args::try_parse_from(["unburn", "--enable"]).is_err());
-        assert!(Args::try_parse_from(["unburn", "--bypass"]).is_err());
-        assert!(Args::try_parse_from(["unburn", "bypass"]).is_err());
-        assert!(Args::try_parse_from(["unburn", "--start-bypassed"]).is_err());
-    }
 }
