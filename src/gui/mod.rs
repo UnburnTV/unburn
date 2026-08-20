@@ -1,8 +1,8 @@
 //! The calibration window.
 //!
 //! This is an ordinary desktop application window and is deliberately kept
-//! separate from the overlay: it only edits the profile and hands the result to
-//! the overlay backend.
+//! separate from the overlay: it only edits the configuration and hands the
+//! result to the overlay backend.
 
 pub mod main_window;
 
@@ -19,7 +19,7 @@ use crate::{app::App, ipc, overlay::TestPattern};
 /// How long each grey level stays up in the cycling calibration mode.
 const CYCLE_INTERVAL: Duration = Duration::from_millis(1500);
 
-/// Transient interface state that does not belong in the profile.
+/// Transient interface state that does not belong in the configuration.
 #[derive(Default)]
 pub struct UiState {
     pub message: Option<(Instant, String)>,
@@ -30,8 +30,6 @@ pub struct UiState {
     pub separate_channels: bool,
     /// Which spot's Edit panel is expanded.
     pub params_open: Option<uuid::Uuid>,
-    /// Contents of the profile name field. Empty means the default profile.
-    pub profile_draft: String,
     /// Path last copied to the clipboard, so the copy control can stay a check.
     pub path_copied: Option<String>,
 }
@@ -84,10 +82,7 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
                 .ok();
 
             Ok(Box::new(UnburnGui {
-                ui: UiState {
-                    profile_draft: app.profile_name().unwrap_or("").to_string(),
-                    ..Default::default()
-                },
+                ui: UiState::default(),
                 app,
                 server,
             }))
@@ -135,7 +130,7 @@ impl eframe::App for UnburnGui {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.app.unsaved_changes() {
             if let Err(error) = self.app.save() {
-                warn!(%error, "could not save the profile on exit");
+                warn!(%error, "could not save the configuration on exit");
             }
         }
     }

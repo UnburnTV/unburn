@@ -3,7 +3,7 @@
 //! Plasma is the only desktop that hands over the EDID block
 //! itself rather than a few fields parsed out of it, which is why the identity
 //! obtained here is the strongest available anywhere: the same fingerprint the
-//! X11 backend computes from the `EDID` output property, so a profile written
+//! X11 backend computes from the `EDID` output property, so settings written
 //! under X11 keeps matching under Plasma's Wayland session and the other way
 //! round.
 //!

@@ -156,7 +156,7 @@ fn display_picker(ui: &mut egui::Ui, app: &mut App) {
             .selected_text(current_label)
             .show_ui(ui, |ui| {
                 let mut chosen: Option<DisplayIdentity> = None;
-                for display in &app.profile.displays {
+                for display in &app.config.displays {
                     let connected =
                         crate::display::best_match(&display.identity, outputs.iter()).is_some();
                     let label = if connected {
@@ -248,7 +248,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         .map(|(index, d)| {
             (
                 d.id(),
-                config::DisplayProfile::defect_label(index),
+                config::DisplayConfig::defect_label(index),
                 d.enabled(),
             )
         })
@@ -605,7 +605,7 @@ fn confirm_delete_dialog(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) 
             .defects
             .iter()
             .position(|d| d.id() == id)
-            .map(config::DisplayProfile::defect_label)
+            .map(config::DisplayConfig::defect_label)
     });
     let Some(name) = name else {
         state.confirm_delete = None;
@@ -657,97 +657,51 @@ fn confirm_delete_dialog(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) 
     }
 }
 
-fn draft_profile_name(state: &UiState) -> Option<String> {
-    config::normalize_profile_name(&state.profile_draft)
-}
-
-fn after_profile_load(app: &App, state: &mut UiState) {
-    state.profile_draft = app.profile_name().unwrap_or("").to_string();
+fn after_reload(state: &mut UiState) {
     state.params_open = None;
     state.confirm_delete = None;
 }
 
-fn load_profile(app: &mut App, state: &mut UiState) {
-    match app.load_named(draft_profile_name(state)) {
+fn reload_config(app: &mut App, state: &mut UiState) {
+    match app.reload() {
         Ok(()) => {
-            after_profile_load(app, state);
-            state.notice(format!("Loaded {}", app.profile_path().display()));
+            after_reload(state);
+            state.notice(format!("Loaded {}", app.config_path().display()));
         }
-        Err(error) => state.notice(format!("Could not load profile: {error}")),
+        Err(error) => state.notice(format!("Could not load configuration: {error}")),
     }
 }
 
-fn save_profile(app: &mut App, state: &mut UiState) {
-    match app.save_to_named(draft_profile_name(state)) {
+fn save_config(app: &mut App, state: &mut UiState) {
+    match app.save() {
         Ok(()) => {
-            state.profile_draft = app.profile_name().unwrap_or("").to_string();
-            state.notice(format!("Saved to {}", app.profile_path().display()));
+            state.notice(format!("Saved to {}", app.config_path().display()));
         }
         Err(error) => state.notice(format!("Could not save: {error}")),
     }
 }
 
-fn profile_picker(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
-    let names = config::list_profiles();
-    let mut pick: Option<Option<String>> = None;
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut state.profile_draft)
-                    .hint_text("Default profile")
-                    .desired_width(180.0),
-            );
-            egui::ComboBox::from_id_salt("profile-pick")
-                .selected_text("")
-                .width(ui.spacing().interact_size.y)
-                .show_ui(ui, |ui| {
-                    ui.set_min_width(180.0);
-                    if ui
-                        .selectable_label(state.profile_draft.trim().is_empty(), "Default profile")
-                        .clicked()
-                    {
-                        pick = Some(None);
-                    }
-                    for name in &names {
-                        if ui
-                            .selectable_label(state.profile_draft.trim() == name, name)
-                            .clicked()
-                        {
-                            pick = Some(Some(name.clone()));
-                        }
-                    }
-                });
-        });
-    });
-    if let Some(name) = pick {
-        state.profile_draft = name.unwrap_or_default();
-        load_profile(app, state);
-    }
-}
-
 fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     ui.horizontal(|ui| {
-        profile_picker(ui, app, state);
-        let save = icon_button(RichText::new("Save profile").color(egui::Color32::WHITE))
+        let save = icon_button(RichText::new("Save").color(egui::Color32::WHITE))
             .fill(egui::Color32::from_rgb(70, 170, 110))
             .atom_ui(ui);
         paint_icon(ui, &save, BtnIcon::Save, Some(egui::Color32::WHITE));
         if save
             .response
-            .on_hover_text("Write the current spots to this profile")
+            .on_hover_text("Write the current spots to the configuration file")
             .clicked()
         {
-            save_profile(app, state);
+            save_config(app, state);
         }
-        let load = icon_button("Load profile").atom_ui(ui);
+        let load = icon_button("Reload").atom_ui(ui);
         paint_icon(ui, &load, BtnIcon::Load, None);
         if load
             .response
-            .on_hover_text("Load this profile from disk")
+            .on_hover_text("Discard unsaved edits and load the configuration file from disk")
             .clicked()
         {
-            load_profile(app, state);
+            reload_config(app, state);
         }
         if app.unsaved_changes() {
             ui.label(RichText::new("unsaved changes").weak().small());
@@ -755,9 +709,7 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     });
 
     ui.horizontal(|ui| {
-        let path = config::profile_path(draft_profile_name(state).as_deref())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| app.profile_path().display().to_string());
+        let path = app.config_path().display().to_string();
         ui.label(RichText::new(&path).small().weak());
         let copy_size = ui.text_style_height(&egui::TextStyle::Small);
         let copy = egui::Button::new(egui::Atom::custom(
@@ -771,10 +723,10 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
             (
                 BtnIcon::Check,
                 Some(egui::Color32::from_rgb(70, 170, 110)),
-                "Copied the profile path",
+                "Copied the configuration path",
             )
         } else {
-            (BtnIcon::Copy, None, "Copy the profile path")
+            (BtnIcon::Copy, None, "Copy the configuration path")
         };
         paint_icon(ui, &copy, icon, color);
         if copy.response.on_hover_text(hover).clicked() {
@@ -789,7 +741,7 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         .checkbox(&mut autostart, "Start automatically on login")
         .changed()
     {
-        match config::set_autostart(autostart, app.profile_name()) {
+        match config::set_autostart(autostart) {
             Ok(()) => state.notice("Updated the login entry."),
             Err(error) => state.notice(format!("Could not update autostart: {error}")),
         }

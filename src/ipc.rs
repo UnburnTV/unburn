@@ -7,7 +7,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
@@ -69,44 +69,14 @@ pub struct Server {
 
 impl Server {
     /// Bind the control socket, or report that somebody else already has it.
-    pub fn bind(profile: Option<&str>) -> Result<Server, BindError> {
-        Server::bind_notified(profile, || {})
+    pub fn bind() -> Result<Server, BindError> {
+        Server::bind_notified(|| {})
     }
 
     /// Same, but call `notify` whenever a request arrives so an idle main loop
     /// can wake up instead of polling.
-    pub fn bind_notified(
-        profile: Option<&str>,
-        notify: impl Fn() + Send + 'static,
-    ) -> Result<Server, BindError> {
-        let path = socket_path(profile);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).ok();
-        }
-
-        // A socket file left behind by a crash is not a running instance.
-        if path.exists() {
-            if UnixStream::connect(&path).is_ok() {
-                return Err(BindError::AlreadyRunning(path));
-            }
-            fs::remove_file(&path).ok();
-        }
-
-        let listener = UnixListener::bind(&path).map_err(BindError::Io)?;
-        let (tx, requests) = mpsc::channel();
-        let status = Arc::new(Mutex::new(StatusSnapshot::default()));
-
-        let accept_status = Arc::clone(&status);
-        thread::Builder::new()
-            .name("unburn-ipc".into())
-            .spawn(move || serve(listener, tx, accept_status, notify))
-            .map_err(BindError::Io)?;
-
-        Ok(Server {
-            path,
-            requests,
-            status,
-        })
+    pub fn bind_notified(notify: impl Fn() + Send + 'static) -> Result<Server, BindError> {
+        bind_at(socket_path(), notify)
     }
 
     /// Requests that arrived since the last call. Never blocks.
@@ -124,6 +94,36 @@ impl Server {
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
+}
+
+fn bind_at(path: PathBuf, notify: impl Fn() + Send + 'static) -> Result<Server, BindError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    // A socket file left behind by a crash is not a running instance.
+    if path.exists() {
+        if UnixStream::connect(&path).is_ok() {
+            return Err(BindError::AlreadyRunning(path));
+        }
+        fs::remove_file(&path).ok();
+    }
+
+    let listener = UnixListener::bind(&path).map_err(BindError::Io)?;
+    let (tx, requests) = mpsc::channel();
+    let status = Arc::new(Mutex::new(StatusSnapshot::default()));
+
+    let accept_status = Arc::clone(&status);
+    thread::Builder::new()
+        .name("unburn-ipc".into())
+        .spawn(move || serve(listener, tx, accept_status, notify))
+        .map_err(BindError::Io)?;
+
+    Ok(Server {
+        path,
+        requests,
+        status,
+    })
 }
 
 impl Drop for Server {
@@ -177,9 +177,12 @@ pub enum BindError {
 }
 
 /// Send one request to a running instance and return its reply.
-pub fn send(profile: Option<&str>, request: &Request) -> Result<String, io::Error> {
-    let path = socket_path(profile);
-    let mut stream = UnixStream::connect(&path)?;
+pub fn send(request: &Request) -> Result<String, io::Error> {
+    send_to(&socket_path(), request)
+}
+
+fn send_to(path: &Path, request: &Request) -> Result<String, io::Error> {
+    let mut stream = UnixStream::connect(path)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     writeln!(stream, "{}", request.wire())?;
     stream.flush()?;
@@ -194,31 +197,15 @@ pub fn send(profile: Option<&str>, request: &Request) -> Result<String, io::Erro
     }
 }
 
-/// `$XDG_RUNTIME_DIR/unburn[-profile].sock`, falling back to `/tmp`.
-pub fn socket_path(profile: Option<&str>) -> PathBuf {
+/// `$XDG_RUNTIME_DIR/unburn-{uid}.sock`, falling back to `/tmp`.
+pub fn socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
 
     let user = rustix::process::getuid().as_raw();
-    let name = match profile {
-        Some(p) if !p.is_empty() => format!("unburn-{user}-{}.sock", sanitize(p)),
-        _ => format!("unburn-{user}.sock"),
-    };
-    base.join(name)
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+    base.join(format!("unburn-{user}.sock"))
 }
 
 #[cfg(test)]
@@ -249,25 +236,38 @@ mod tests {
         assert_eq!(Request::parse(""), None);
     }
 
+    fn unique_socket() -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "unburn-ipc-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unburn.sock");
+        (dir, path)
+    }
+
     #[test]
-    fn the_socket_is_per_user_and_per_profile() {
-        let default = socket_path(None);
-        let named = socket_path(Some("living-room"));
-        assert_ne!(default, named);
-        assert!(named.to_str().unwrap().contains("living-room"));
+    fn the_socket_is_one_per_user() {
+        let path = socket_path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap();
+        assert!(name.starts_with("unburn-"), "{name}");
+        assert!(name.ends_with(".sock"), "{name}");
+        let uid = name.trim_start_matches("unburn-").trim_end_matches(".sock");
+        assert!(
+            uid.chars().all(|c| c.is_ascii_digit()),
+            "socket name must not encode a profile: {name}"
+        );
     }
 
     #[test]
     fn a_client_reaches_the_server() {
-        let profile = format!("test-{}", std::process::id());
-        let server = Server::bind(Some(&profile)).unwrap();
+        let (dir, path) = unique_socket();
+        let server = bind_at(path.clone(), || {}).unwrap();
         server.publish_status("compensation on".into());
 
-        assert_eq!(
-            send(Some(&profile), &Request::Status).unwrap(),
-            "compensation on"
-        );
-        send(Some(&profile), &Request::Hide).unwrap();
+        assert_eq!(send_to(&path, &Request::Status).unwrap(), "compensation on");
+        send_to(&path, &Request::Hide).unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
@@ -280,15 +280,19 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        drop(server);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_second_instance_is_refused() {
-        let profile = format!("dup-{}", std::process::id());
-        let _first = Server::bind(Some(&profile)).unwrap();
+        let (dir, path) = unique_socket();
+        let _first = bind_at(path.clone(), || {}).unwrap();
         assert!(matches!(
-            Server::bind(Some(&profile)),
+            bind_at(path, || {}),
             Err(BindError::AlreadyRunning(_))
         ));
+        drop(_first);
+        fs::remove_dir_all(&dir).ok();
     }
 }

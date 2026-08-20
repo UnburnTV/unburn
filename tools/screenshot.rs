@@ -24,7 +24,7 @@ use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
 use unburn::{
     app::App,
     compensation::{Defect, RadialDefect, Rgb, Vec2},
-    config::Profile,
+    config::Config,
     display::{DisplayIdentity, OutputId, OutputInfo, Transform},
     gui::{main_window, UiState},
     platform::{BackendKind, BackendReport, Support},
@@ -53,13 +53,15 @@ const SHOWN_CONFIG_HOME: &str = "/home/you/.config";
 fn main() -> Result<(), String> {
     let (output, size) = parse_args()?;
 
-    // Read back by `config::config_dir` while the window draws, so the profile
-    // path on screen is the one a reader would have rather than this machine's.
+    // Read back by `config::config_dir` while the window draws, so the
+    // configuration path on screen is the one a reader would have rather than
+    // this machine's.
     std::env::set_var("XDG_CONFIG_HOME", SHOWN_CONFIG_HOME);
 
-    let (profile, outputs) = staged_profile();
+    let (config, outputs) = staged_config();
     let mut app = App::offline(
-        profile,
+        config,
+        PathBuf::from(SHOWN_CONFIG_HOME).join("unburn/config.toml"),
         outputs,
         vec![BackendReport {
             kind: BackendKind::X11,
@@ -73,7 +75,7 @@ fn main() -> Result<(), String> {
         .selected_display()
         .and_then(|display| display.defects.get(1))
         .map(|defect| defect.id())
-        .ok_or("the staged profile lost its second spot")?;
+        .ok_or("the staged configuration lost its second spot")?;
     app.select_defect(Some(spot));
     app.set_calibration_disc(Some(spot));
 
@@ -148,7 +150,7 @@ fn parse_size(value: &str) -> Result<[f32; 2], String> {
 
 /// The situation being photographed: a TV with three modelled blemishes, the
 /// middle one tinted so the per-channel sliders are the ones on show.
-fn staged_profile() -> (Profile, Vec<OutputInfo>) {
+fn staged_config() -> (Config, Vec<OutputInfo>) {
     let identity = DisplayIdentity {
         connector: Some("HDMI-A-1".into()),
         manufacturer: Some("SAM".into()),
@@ -184,8 +186,8 @@ fn staged_profile() -> (Profile, Vec<OutputInfo>) {
         },
     ];
 
-    let mut profile = Profile::default();
-    let display = profile.entry(&identity);
+    let mut config = Config::default();
+    let display = config.entry(&identity);
     display.name = "Living Room TV".into();
     display.defects = spots.into_iter().map(Defect::Radial).collect();
 
@@ -199,7 +201,7 @@ fn staged_profile() -> (Profile, Vec<OutputInfo>) {
         transform: Transform::Normal,
         refresh_mhz: Some(59_940),
     };
-    (profile, vec![output])
+    (config, vec![output])
 }
 
 struct Shot {

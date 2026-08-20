@@ -1,4 +1,4 @@
-//! Human-readable, hand-editable persistence of compensation profiles.
+//! Human-readable, hand-editable persistence of compensation settings.
 
 use std::{
     fs, io,
@@ -33,15 +33,17 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
-    #[error("{path} is not a valid unburn profile: {source}")]
+    #[error("{path} is not a valid unburn configuration: {source}")]
     Parse {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
     },
-    #[error("serializing the profile: {0}")]
+    #[error("serializing the configuration: {0}")]
     Serialize(#[from] toml::ser::Error),
-    #[error("profile version {found} is newer than this build understands ({CURRENT_VERSION})")]
+    #[error(
+        "configuration version {found} is newer than this build understands ({CURRENT_VERSION})"
+    )]
     UnsupportedVersion { found: u32 },
     #[error("no home or XDG configuration directory is set")]
     NoConfigDir,
@@ -49,14 +51,14 @@ pub enum ConfigError {
 
 /// The whole on-disk configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Profile {
+pub struct Config {
     pub version: u32,
     /// Written as repeated `[[display]]` tables.
     #[serde(default, rename = "display")]
-    pub displays: Vec<DisplayProfile>,
+    pub displays: Vec<DisplayConfig>,
 }
 
-impl Default for Profile {
+impl Default for Config {
     fn default() -> Self {
         Self {
             version: CURRENT_VERSION,
@@ -67,7 +69,7 @@ impl Default for Profile {
 
 /// Per-monitor compensation settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DisplayProfile {
+pub struct DisplayConfig {
     /// Friendly label chosen by the user.
     #[serde(default)]
     pub name: String,
@@ -95,7 +97,7 @@ fn default_compensation() -> f32 {
     1.0
 }
 
-impl DisplayProfile {
+impl DisplayConfig {
     pub fn new(identity: DisplayIdentity) -> Self {
         Self {
             name: identity.describe(),
@@ -135,35 +137,35 @@ impl DisplayProfile {
     }
 }
 
-impl Profile {
+impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_owned(),
             source,
         })?;
-        let profile: Profile = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        let parsed: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
             source,
         })?;
-        if profile.version > CURRENT_VERSION {
+        if parsed.version > CURRENT_VERSION {
             return Err(ConfigError::UnsupportedVersion {
-                found: profile.version,
+                found: parsed.version,
             });
         }
-        Ok(profile)
+        Ok(parsed)
     }
 
-    /// Load `path`, or return an empty profile if the file does not exist yet.
+    /// Load `path`, or return an empty configuration if the file does not exist yet.
     pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
-        match Profile::load(path) {
+        match Config::load(path) {
             Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                Ok(Profile::default())
+                Ok(Config::default())
             }
             other => other,
         }
     }
 
-    /// Write atomically, so a crash mid-save cannot leave a truncated profile.
+    /// Write atomically, so a crash mid-save cannot leave a truncated file.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         // Plain `to_string` keeps `center = [0.62, 0.43]` on one line; the
         // pretty printer explodes every array across four.
@@ -187,11 +189,11 @@ impl Profile {
     }
 
     /// The stored settings for a monitor, if we have ever seen it.
-    pub fn find(&self, identity: &DisplayIdentity) -> Option<&DisplayProfile> {
+    pub fn find(&self, identity: &DisplayIdentity) -> Option<&DisplayConfig> {
         self.best_index(identity).map(|i| &self.displays[i])
     }
 
-    pub fn find_mut(&mut self, identity: &DisplayIdentity) -> Option<&mut DisplayProfile> {
+    pub fn find_mut(&mut self, identity: &DisplayIdentity) -> Option<&mut DisplayConfig> {
         self.best_index(identity)
             .map(move |i| &mut self.displays[i])
     }
@@ -207,7 +209,7 @@ impl Profile {
     }
 
     /// Get the settings for a monitor, creating defaults on first sight.
-    pub fn entry(&mut self, identity: &DisplayIdentity) -> &mut DisplayProfile {
+    pub fn entry(&mut self, identity: &DisplayIdentity) -> &mut DisplayConfig {
         match self.best_index(identity) {
             Some(i) => {
                 // Refresh the identity so a monitor that moved to another port
@@ -217,7 +219,7 @@ impl Profile {
                 &mut self.displays[i]
             }
             None => {
-                self.displays.push(DisplayProfile::new(identity.clone()));
+                self.displays.push(DisplayConfig::new(identity.clone()));
                 self.displays.last_mut().unwrap()
             }
         }
@@ -235,56 +237,9 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
     Ok(PathBuf::from(home).join(".config").join(APP_DIR))
 }
 
-/// Path of the default profile, or of a named one when `--profile` was given.
-pub fn profile_path(name: Option<&str>) -> Result<PathBuf, ConfigError> {
-    let dir = config_dir()?;
-    Ok(match name {
-        None => dir.join("config.toml"),
-        Some(name) => dir
-            .join("profiles")
-            .join(format!("{}.toml", sanitize(name))),
-    })
-}
-
-/// Blank or whitespace-only names refer to the default profile.
-pub fn normalize_profile_name(name: &str) -> Option<String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// Names of the profiles saved next to the default one.
-pub fn list_profiles() -> Vec<String> {
-    let Ok(dir) = config_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = fs::read_dir(dir.join("profiles")) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            (path.extension()? == "toml").then(|| path.file_stem()?.to_str().map(str::to_owned))?
-        })
-        .collect();
-    names.sort();
-    names
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+/// `$XDG_CONFIG_HOME/unburn/config.toml`. Every known monitor lives here.
+pub fn config_path() -> Result<PathBuf, ConfigError> {
+    Ok(config_dir()?.join("config.toml"))
 }
 
 /// Path of the XDG autostart entry.
@@ -305,7 +260,7 @@ pub fn autostart_enabled() -> bool {
 }
 
 /// Install or remove the `Start automatically on login` entry.
-pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigError> {
+pub fn set_autostart(enabled: bool) -> Result<(), ConfigError> {
     let path = autostart_path()?;
     if !enabled {
         match fs::remove_file(&path) {
@@ -318,21 +273,8 @@ pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigE
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "unburn".to_string());
-    let mut command = format!("{exe} start");
-    if let Some(profile) = profile {
-        command.push_str(&format!(" --profile {}", sanitize(profile)));
-    }
-
-    let desktop = format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name=unburn\n\
-         Comment=Display uniformity compensation overlay\n\
-         Exec={command}\n\
-         Terminal=false\n\
-         Categories=Utility;\n\
-         X-GNOME-Autostart-enabled=true\n"
-    );
+    let command = format!("{exe} start");
+    let desktop = autostart_desktop(&command);
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
@@ -341,6 +283,48 @@ pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigE
         })?;
     }
     fs::write(&path, desktop).map_err(|source| ConfigError::Write { path, source })
+}
+
+fn autostart_desktop(command: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=unburn\n\
+         Comment=Display uniformity compensation overlay\n\
+         Exec={command}\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+fn autostart_mentions_profile(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("Exec=") && line.contains("--profile")
+    })
+}
+
+/// Rewrite a login entry left over from named profiles, which this build rejects.
+pub fn repair_autostart() -> Result<(), ConfigError> {
+    let path = autostart_path()?;
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    if !autostart_mentions_profile(&text) {
+        return Ok(());
+    }
+    set_autostart(true)
+}
+
+/// Directory of leftover named-profile files, if any still sit next to `config.toml`.
+pub fn leftover_named_profiles(dir: &Path) -> Option<PathBuf> {
+    let profiles = dir.join("profiles");
+    let entries = fs::read_dir(&profiles).ok()?;
+    let has_toml = entries
+        .flatten()
+        .any(|e| e.path().extension().is_some_and(|ext| ext == "toml"));
+    has_toml.then_some(profiles)
 }
 
 #[cfg(test)]
@@ -381,7 +365,7 @@ falloff = 1.3
 
     #[test]
     fn parses_the_specifications_example_file() {
-        let profile: Profile = toml::from_str(SPEC_EXAMPLE).unwrap();
+        let profile: Config = toml::from_str(SPEC_EXAMPLE).unwrap();
         assert_eq!(profile.version, 1);
         assert_eq!(profile.displays.len(), 1);
 
@@ -403,7 +387,7 @@ falloff = 1.3
 
     #[test]
     fn omitted_fields_take_sensible_defaults() {
-        let profile: Profile =
+        let profile: Config =
             toml::from_str("version = 1\n[[display]]\nconnector = \"DP-1\"\n").unwrap();
         let display = &profile.displays[0];
         assert!(display.enabled);
@@ -415,10 +399,10 @@ falloff = 1.3
     #[test]
     fn retired_calibration_keys_are_ignored_rather_than_refused() {
         // Gamma, reference level and composition were once per-display settings.
-        // They are fixed in the model now, but a profile written before that has
+        // They are fixed in the model now, but a file written before that has
         // to keep loading -- silently, and without losing anything else on the
         // way past.
-        let profile: Profile = toml::from_str(
+        let profile: Config = toml::from_str(
             "version = 1\n\
              [[display]]\n\
              connector = \"DP-1\"\n\
@@ -441,7 +425,7 @@ falloff = 1.3
 
     #[test]
     fn round_trips_through_toml() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         let display = profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             model: Some("QN90".into()),
@@ -455,33 +439,33 @@ falloff = 1.3
 
         let text = toml::to_string(&profile).unwrap();
         assert!(text.contains("center = [0.62, 0.43]"), "{text}");
-        let back: Profile = toml::from_str(&text).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
         // Compared as written rather than by value: defect ids are runtime
         // handles, minted afresh on load and absent from the file.
         assert_eq!(toml::to_string(&back).unwrap(), text);
     }
 
     #[test]
-    fn refuses_profiles_from_the_future() {
+    fn refuses_configurations_from_the_future() {
         let dir = std::env::temp_dir().join(format!("unburn-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("future.toml");
         fs::write(&path, "version = 99\n").unwrap();
         assert!(matches!(
-            Profile::load(&path),
+            Config::load(&path),
             Err(ConfigError::UnsupportedVersion { found: 99 })
         ));
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn a_missing_file_is_an_empty_profile() {
+    fn a_missing_file_is_an_empty_configuration() {
         let path = std::env::temp_dir().join(format!(
             "unburn-missing-{}-{}.toml",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let profile = Profile::load_or_default(&path).unwrap();
+        let profile = Config::load_or_default(&path).unwrap();
         assert!(profile.displays.is_empty());
     }
 
@@ -489,19 +473,19 @@ falloff = 1.3
     fn saving_and_loading_preserves_everything() {
         let dir = std::env::temp_dir().join(format!("unburn-save-{}", std::process::id()));
         let path = dir.join("config.toml");
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             ..Default::default()
         });
         profile.save(&path).unwrap();
-        assert_eq!(Profile::load(&path).unwrap(), profile);
+        assert_eq!(Config::load(&path).unwrap(), profile);
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn entry_reuses_a_known_display_and_refreshes_its_identity() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             serial: Some("ABC".into()),
@@ -530,8 +514,8 @@ falloff = 1.3
     }
 
     #[test]
-    fn swapping_the_monitor_on_a_port_leaves_the_old_profile_alone() {
-        let mut profile = Profile::default();
+    fn swapping_the_monitor_on_a_port_leaves_the_old_settings_alone() {
+        let mut profile = Config::default();
         let tv = profile.entry(&living_room_tv());
         tv.name = "Living Room TV".into();
         tv.compensation = 0.82;
@@ -553,7 +537,7 @@ falloff = 1.3
 
     #[test]
     fn a_session_that_cannot_read_edid_keeps_what_an_earlier_one_learned() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&living_room_tv());
 
         // The same panel as a Wayland client sees it: no serial, no EDID, and a
@@ -576,7 +560,7 @@ falloff = 1.3
     /// round trip must not disturb it.
     #[test]
     fn saving_and_loading_preserves_the_order_of_defects() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         let display = profile.entry(&DisplayIdentity::default());
         for x in [0.1, 0.5, 0.9] {
             display.defects.push(Defect::Radial(RadialDefect {
@@ -585,7 +569,7 @@ falloff = 1.3
             }));
         }
 
-        let back: Profile = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
+        let back: Config = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
         let centers: Vec<f32> = back.displays[0]
             .defects
             .iter()
@@ -595,22 +579,40 @@ falloff = 1.3
     }
 
     #[test]
-    fn profile_names_cannot_escape_the_config_directory() {
-        let path = profile_path(Some("../../etc/passwd")).unwrap();
-        let profiles = config_dir().unwrap().join("profiles");
-        assert!(path.starts_with(&profiles), "{path:?}");
-        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("toml"));
-        assert_ne!(
+    fn every_monitor_lives_in_a_single_config_file() {
+        let path = config_path().unwrap();
+        assert_eq!(path, config_dir().unwrap().join("config.toml"));
+        assert_eq!(
             path.file_name().and_then(|s| s.to_str()),
-            Some("passwd.toml"),
-            "the requested path must not survive sanitisation"
+            Some("config.toml")
+        );
+        assert!(
+            !path.components().any(|c| c.as_os_str() == "profiles"),
+            "{path:?}"
         );
     }
 
     #[test]
-    fn an_empty_profile_name_is_the_default() {
-        assert_eq!(normalize_profile_name(""), None);
-        assert_eq!(normalize_profile_name("  \t"), None);
-        assert_eq!(normalize_profile_name(" tv "), Some("tv".into()));
+    fn leftover_named_profile_files_are_detected() {
+        let dir = std::env::temp_dir().join(format!("unburn-legacy-{}", uuid::Uuid::new_v4()));
+        let profiles = dir.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        assert_eq!(leftover_named_profiles(&dir), None);
+        fs::write(profiles.join("tv.toml"), "version = 1\n").unwrap();
+        assert_eq!(leftover_named_profiles(&dir), Some(profiles));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_login_entry_must_not_name_a_profile() {
+        let desktop = autostart_desktop("/usr/bin/unburn start");
+        assert!(
+            desktop.contains("Exec=/usr/bin/unburn start\n"),
+            "{desktop}"
+        );
+        assert!(!autostart_mentions_profile(&desktop));
+        assert!(autostart_mentions_profile(
+            "Exec=/usr/bin/unburn start --profile living-room\n"
+        ));
     }
 }

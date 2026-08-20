@@ -330,7 +330,7 @@ impl Reconciler {
 
         let outputs = backend.outputs();
 
-        // Drop overlays whose output disappeared. The profile stays put, so the
+        // Drop overlays whose output disappeared. The configuration stays put, so the
         // compensation comes back untouched if the monitor returns.
         let present: Vec<OutputId> = outputs.iter().map(|o| o.id).collect();
         let stale: Vec<OutputId> = self
@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unplugged_monitor_loses_its_overlay_but_keeps_its_profile() {
+    fn an_unplugged_monitor_loses_its_overlay_but_keeps_its_settings() {
         let mut backend = FakeBackend {
             outputs: vec![output(1, "HDMI-A-1")],
             ..Default::default()

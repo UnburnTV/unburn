@@ -33,7 +33,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
     match args.command {
         Some(Command::Autostart { state }) => {
             let enable = state == OnOff::On;
-            config::set_autostart(enable, args.profile.as_deref()).map_err(|e| e.to_string())?;
+            config::set_autostart(enable).map_err(|e| e.to_string())?;
             println!(
                 "Start on login: {}",
                 if enable { "enabled" } else { "disabled" }
@@ -56,12 +56,12 @@ fn run(args: Args) -> Result<ExitCode, String> {
     // One instance owns the overlays; a second one just hands over its request.
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let ipc_wake = wake_tx.clone();
-    let server = match ipc::Server::bind_notified(args.profile.as_deref(), move || {
+    let server = match ipc::Server::bind_notified(move || {
         ipc_wake.send(()).ok();
     }) {
         Ok(server) => server,
         Err(ipc::BindError::AlreadyRunning(_)) => {
-            ipc::send(args.profile.as_deref(), &ipc::Request::ShowWindow)
+            ipc::send(&ipc::Request::ShowWindow)
                 .map_err(|e| format!("another instance is running but did not answer: {e}"))?;
             println!("unburn is already running; asked it to show its window.");
             return Ok(ExitCode::SUCCESS);
@@ -91,7 +91,7 @@ fn remote_control(args: &Args) -> Result<ExitCode, String> {
         _ => unreachable!("remote_control is only called for hide/show/quit/status"),
     };
 
-    match ipc::send(args.profile.as_deref(), &request) {
+    match ipc::send(&request) {
         Ok(reply) => {
             if !reply.is_empty() {
                 println!("{reply}");
