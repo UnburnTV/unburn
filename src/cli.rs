@@ -10,10 +10,6 @@ pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Use a named profile instead of the default configuration.
-    #[arg(long, global = true, value_name = "NAME")]
-    pub profile: Option<String>,
-
     /// Show a fullscreen calibration pattern at startup.
     ///
     /// Accepts a grey level in percent (`0`, `5`, `10`, `25`, `50`, `75`,
@@ -101,14 +97,12 @@ mod tests {
             Args::parse_from(["unburn", "start"]).command,
             Some(Command::Start)
         );
-        assert_eq!(
-            Args::parse_from(["unburn", "--profile", "living-room"])
-                .profile
-                .as_deref(),
-            Some("living-room")
+        assert!(
+            Args::try_parse_from(["unburn", "--profile", "living-room"]).is_err(),
+            "named profiles are gone; every monitor lives in one configuration"
         );
         assert_eq!(
-            Args::parse_from(["unburn", "hide", "--profile", "bedroom"]).command,
+            Args::parse_from(["unburn", "hide"]).command,
             Some(Command::Hide)
         );
         assert_eq!(

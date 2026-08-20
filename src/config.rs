@@ -1,4 +1,4 @@
-//! Human-readable, hand-editable persistence of compensation profiles.
+//! Human-readable, hand-editable persistence of compensation settings.
 
 use std::{
     fs, io,
@@ -33,15 +33,17 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
-    #[error("{path} is not a valid unburn profile: {source}")]
+    #[error("{path} is not a valid unburn configuration: {source}")]
     Parse {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
     },
-    #[error("serializing the profile: {0}")]
+    #[error("serializing the configuration: {0}")]
     Serialize(#[from] toml::ser::Error),
-    #[error("profile version {found} is newer than this build understands ({CURRENT_VERSION})")]
+    #[error(
+        "configuration version {found} is newer than this build understands ({CURRENT_VERSION})"
+    )]
     UnsupportedVersion { found: u32 },
     #[error("no home or XDG configuration directory is set")]
     NoConfigDir,
@@ -153,7 +155,7 @@ impl Profile {
         Ok(profile)
     }
 
-    /// Load `path`, or return an empty profile if the file does not exist yet.
+    /// Load `path`, or return an empty configuration if the file does not exist yet.
     pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
         match Profile::load(path) {
             Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -163,7 +165,7 @@ impl Profile {
         }
     }
 
-    /// Write atomically, so a crash mid-save cannot leave a truncated profile.
+    /// Write atomically, so a crash mid-save cannot leave a truncated file.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         // Plain `to_string` keeps `center = [0.62, 0.43]` on one line; the
         // pretty printer explodes every array across four.
@@ -235,56 +237,9 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
     Ok(PathBuf::from(home).join(".config").join(APP_DIR))
 }
 
-/// Path of the default profile, or of a named one when `--profile` was given.
-pub fn profile_path(name: Option<&str>) -> Result<PathBuf, ConfigError> {
-    let dir = config_dir()?;
-    Ok(match name {
-        None => dir.join("config.toml"),
-        Some(name) => dir
-            .join("profiles")
-            .join(format!("{}.toml", sanitize(name))),
-    })
-}
-
-/// Blank or whitespace-only names refer to the default profile.
-pub fn normalize_profile_name(name: &str) -> Option<String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// Names of the profiles saved next to the default one.
-pub fn list_profiles() -> Vec<String> {
-    let Ok(dir) = config_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = fs::read_dir(dir.join("profiles")) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            (path.extension()? == "toml").then(|| path.file_stem()?.to_str().map(str::to_owned))?
-        })
-        .collect();
-    names.sort();
-    names
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+/// `$XDG_CONFIG_HOME/unburn/config.toml`. Every known monitor lives here.
+pub fn config_path() -> Result<PathBuf, ConfigError> {
+    Ok(config_dir()?.join("config.toml"))
 }
 
 /// Path of the XDG autostart entry.
@@ -305,7 +260,7 @@ pub fn autostart_enabled() -> bool {
 }
 
 /// Install or remove the `Start automatically on login` entry.
-pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigError> {
+pub fn set_autostart(enabled: bool) -> Result<(), ConfigError> {
     let path = autostart_path()?;
     if !enabled {
         match fs::remove_file(&path) {
@@ -318,10 +273,7 @@ pub fn set_autostart(enabled: bool, profile: Option<&str>) -> Result<(), ConfigE
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "unburn".to_string());
-    let mut command = format!("{exe} start");
-    if let Some(profile) = profile {
-        command.push_str(&format!(" --profile {}", sanitize(profile)));
-    }
+    let command = format!("{exe} start");
 
     let desktop = format!(
         "[Desktop Entry]\n\
@@ -415,7 +367,7 @@ falloff = 1.3
     #[test]
     fn retired_calibration_keys_are_ignored_rather_than_refused() {
         // Gamma, reference level and composition were once per-display settings.
-        // They are fixed in the model now, but a profile written before that has
+        // They are fixed in the model now, but a file written before that has
         // to keep loading -- silently, and without losing anything else on the
         // way past.
         let profile: Profile = toml::from_str(
@@ -462,7 +414,7 @@ falloff = 1.3
     }
 
     #[test]
-    fn refuses_profiles_from_the_future() {
+    fn refuses_configurations_from_the_future() {
         let dir = std::env::temp_dir().join(format!("unburn-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("future.toml");
@@ -475,7 +427,7 @@ falloff = 1.3
     }
 
     #[test]
-    fn a_missing_file_is_an_empty_profile() {
+    fn a_missing_file_is_an_empty_configuration() {
         let path = std::env::temp_dir().join(format!(
             "unburn-missing-{}-{}.toml",
             std::process::id(),
@@ -530,7 +482,7 @@ falloff = 1.3
     }
 
     #[test]
-    fn swapping_the_monitor_on_a_port_leaves_the_old_profile_alone() {
+    fn swapping_the_monitor_on_a_port_leaves_the_old_settings_alone() {
         let mut profile = Profile::default();
         let tv = profile.entry(&living_room_tv());
         tv.name = "Living Room TV".into();
@@ -595,22 +547,16 @@ falloff = 1.3
     }
 
     #[test]
-    fn profile_names_cannot_escape_the_config_directory() {
-        let path = profile_path(Some("../../etc/passwd")).unwrap();
-        let profiles = config_dir().unwrap().join("profiles");
-        assert!(path.starts_with(&profiles), "{path:?}");
-        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("toml"));
-        assert_ne!(
+    fn every_monitor_lives_in_a_single_config_file() {
+        let path = config_path().unwrap();
+        assert_eq!(path, config_dir().unwrap().join("config.toml"));
+        assert_eq!(
             path.file_name().and_then(|s| s.to_str()),
-            Some("passwd.toml"),
-            "the requested path must not survive sanitisation"
+            Some("config.toml")
         );
-    }
-
-    #[test]
-    fn an_empty_profile_name_is_the_default() {
-        assert_eq!(normalize_profile_name(""), None);
-        assert_eq!(normalize_profile_name("  \t"), None);
-        assert_eq!(normalize_profile_name(" tv "), Some("tv".into()));
+        assert!(
+            !path.components().any(|c| c.as_os_str() == "profiles"),
+            "{path:?}"
+        );
     }
 }

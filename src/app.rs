@@ -1,4 +1,4 @@
-//! The application: profile, live overlays, and the rules connecting them.
+//! The application: configuration, live overlays, and the rules connecting them.
 //!
 //! Everything the GUI can do goes through this type, so the headless mode and
 //! the control socket get exactly the same behaviour without duplicating it.
@@ -38,8 +38,7 @@ pub const MAX_STRENGTH: f32 = 5.0;
 
 pub struct App {
     pub profile: Profile,
-    profile_path: PathBuf,
-    profile_name: Option<String>,
+    config_path: PathBuf,
 
     service: Option<OverlayService>,
     reports: Vec<BackendReport>,
@@ -68,20 +67,17 @@ pub struct App {
 }
 
 impl App {
-    /// Load the profile and bring up the overlay backend.
+    /// Load the configuration and bring up the overlay backend.
     ///
     /// `wake` is signalled whenever the backend has something to report, so the
     /// caller's main loop can stay asleep the rest of the time.
     pub fn start(args: &Args, wake: Sender<()>) -> Result<App, String> {
-        let profile_name = args.profile.clone();
-        let profile_path =
-            config::profile_path(profile_name.as_deref()).map_err(|e| e.to_string())?;
-        let profile = Profile::load_or_default(&profile_path).map_err(|e| e.to_string())?;
+        let config_path = config::config_path().map_err(|e| e.to_string())?;
+        let profile = Profile::load_or_default(&config_path).map_err(|e| e.to_string())?;
 
         let mut app = App {
             profile,
-            profile_path,
-            profile_name,
+            config_path,
             service: None,
             reports: platform::detect(),
             offline_outputs: Vec::new(),
@@ -124,8 +120,7 @@ impl App {
     pub fn offline(profile: Profile, outputs: Vec<OutputInfo>, reports: Vec<BackendReport>) -> App {
         let mut app = App {
             profile,
-            profile_path: PathBuf::from("config.toml"),
-            profile_name: None,
+            config_path: config::config_path().unwrap_or_else(|_| PathBuf::from("config.toml")),
             service: None,
             reports,
             offline_outputs: outputs,
@@ -199,12 +194,8 @@ impl App {
         }
     }
 
-    pub fn profile_path(&self) -> &PathBuf {
-        &self.profile_path
-    }
-
-    pub fn profile_name(&self) -> Option<&str> {
-        self.profile_name.as_deref()
+    pub fn config_path(&self) -> &PathBuf {
+        &self.config_path
     }
 
     pub fn is_bypassed(&self) -> bool {
@@ -457,50 +448,17 @@ impl App {
 
     pub fn save(&mut self) -> Result<(), String> {
         self.profile
-            .save(&self.profile_path)
+            .save(&self.config_path)
             .map_err(|e| e.to_string())?;
         self.unsaved = false;
-        info!(path = %self.profile_path.display(), "profile saved");
+        info!(path = %self.config_path.display(), "configuration saved");
         Ok(())
     }
 
-    /// Write the current spots to `name`, creating the file if it does not exist.
-    ///
-    /// `None` is the default profile (`config.toml`).
-    pub fn save_to_named(&mut self, name: Option<String>) -> Result<(), String> {
-        let new_path = config::profile_path(name.as_deref()).map_err(|e| e.to_string())?;
-        let previous_name = self.profile_name.clone();
-        let previous_path = self.profile_path.clone();
-        self.profile_name = name;
-        self.profile_path = new_path;
-        if let Err(error) = self.save() {
-            self.profile_name = previous_name;
-            self.profile_path = previous_path;
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    /// Load `name` from disk. `None` is the default profile.
-    ///
-    /// Unsaved work on a different file is written first. A named profile that
-    /// has no file yet is an error: create it with Save.
-    pub fn load_named(&mut self, name: Option<String>) -> Result<(), String> {
-        let new_path = config::profile_path(name.as_deref()).map_err(|e| e.to_string())?;
-        if self.profile_path != new_path && self.unsaved {
-            self.save()?;
-        }
-        if let Some(ref named) = name {
-            if !new_path.is_file() {
-                return Err(format!(
-                    "there is no profile named {named}. Save to create it."
-                ));
-            }
-        }
-        let profile = Profile::load_or_default(&new_path).map_err(|e| e.to_string())?;
+    /// Load the configuration file from disk, discarding unsaved edits.
+    pub fn reload(&mut self) -> Result<(), String> {
+        let profile = Profile::load_or_default(&self.config_path).map_err(|e| e.to_string())?;
         self.profile = profile;
-        self.profile_name = name;
-        self.profile_path = new_path;
         self.unsaved = false;
         self.selected_display = None;
         self.selected_defect = None;
@@ -855,5 +813,29 @@ mod tests {
         for value in [copy.center.x, copy.center.y] {
             assert!((0.0..=1.0).contains(&value), "{:?}", copy.center);
         }
+    }
+
+    #[test]
+    fn reload_replaces_memory_with_what_is_on_disk() {
+        let dir = std::env::temp_dir().join(format!("unburn-reload-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.toml");
+        let identity = DisplayIdentity {
+            connector: Some("HDMI-A-1".into()),
+            ..Default::default()
+        };
+
+        let mut on_disk = Profile::default();
+        on_disk.entry(&identity).compensation = 0.4;
+        on_disk.save(&path).unwrap();
+
+        let mut live = Profile::default();
+        live.entry(&identity).compensation = 0.9;
+
+        let mut app = App::offline(live, vec![], vec![]);
+        app.config_path = path;
+        app.reload().unwrap();
+
+        assert_eq!(app.profile.displays[0].compensation, 0.4);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

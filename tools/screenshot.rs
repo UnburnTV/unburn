@@ -53,8 +53,9 @@ const SHOWN_CONFIG_HOME: &str = "/home/you/.config";
 fn main() -> Result<(), String> {
     let (output, size) = parse_args()?;
 
-    // Read back by `config::config_dir` while the window draws, so the profile
-    // path on screen is the one a reader would have rather than this machine's.
+    // Read back by `config::config_dir` while the window draws, so the
+    // configuration path on screen is the one a reader would have rather than
+    // this machine's.
     std::env::set_var("XDG_CONFIG_HOME", SHOWN_CONFIG_HOME);
 
     let (profile, outputs) = staged_profile();
