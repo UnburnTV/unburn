@@ -4,7 +4,7 @@
 //! The protocol's own wording explains why it is the right place to ask: the
 //! make, model and serial number events exist so that "clients can recognize
 //! heads from previous sessions and for example load head-specific
-//! configurations back". That is precisely what a compensation profile is.
+//! configurations back". That is precisely what these compensation settings are.
 //!
 //! Version 2 is the minimum, because that is where the serial number appears. A
 //! compositor offering only version 1 is treated as having no identity source at

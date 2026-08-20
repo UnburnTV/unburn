@@ -156,7 +156,7 @@ fn display_picker(ui: &mut egui::Ui, app: &mut App) {
             .selected_text(current_label)
             .show_ui(ui, |ui| {
                 let mut chosen: Option<DisplayIdentity> = None;
-                for display in &app.profile.displays {
+                for display in &app.config.displays {
                     let connected =
                         crate::display::best_match(&display.identity, outputs.iter()).is_some();
                     let label = if connected {
@@ -248,7 +248,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         .map(|(index, d)| {
             (
                 d.id(),
-                config::DisplayProfile::defect_label(index),
+                config::DisplayConfig::defect_label(index),
                 d.enabled(),
             )
         })
@@ -605,7 +605,7 @@ fn confirm_delete_dialog(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) 
             .defects
             .iter()
             .position(|d| d.id() == id)
-            .map(config::DisplayProfile::defect_label)
+            .map(config::DisplayConfig::defect_label)
     });
     let Some(name) = name else {
         state.confirm_delete = None;

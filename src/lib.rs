@@ -16,5 +16,5 @@ pub mod overlay;
 pub mod platform;
 
 pub use compensation::{Defect, Mask, MaskParams, MaskQuality, RadialDefect, Rgb, Vec2};
-pub use config::Profile;
+pub use config::{Config, DisplayConfig};
 pub use display::{DisplayIdentity, OutputId, OutputInfo, OverlayId};

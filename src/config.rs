@@ -51,14 +51,14 @@ pub enum ConfigError {
 
 /// The whole on-disk configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Profile {
+pub struct Config {
     pub version: u32,
     /// Written as repeated `[[display]]` tables.
     #[serde(default, rename = "display")]
-    pub displays: Vec<DisplayProfile>,
+    pub displays: Vec<DisplayConfig>,
 }
 
-impl Default for Profile {
+impl Default for Config {
     fn default() -> Self {
         Self {
             version: CURRENT_VERSION,
@@ -69,7 +69,7 @@ impl Default for Profile {
 
 /// Per-monitor compensation settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DisplayProfile {
+pub struct DisplayConfig {
     /// Friendly label chosen by the user.
     #[serde(default)]
     pub name: String,
@@ -97,7 +97,7 @@ fn default_compensation() -> f32 {
     1.0
 }
 
-impl DisplayProfile {
+impl DisplayConfig {
     pub fn new(identity: DisplayIdentity) -> Self {
         Self {
             name: identity.describe(),
@@ -137,29 +137,29 @@ impl DisplayProfile {
     }
 }
 
-impl Profile {
+impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.to_owned(),
             source,
         })?;
-        let profile: Profile = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        let parsed: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
             source,
         })?;
-        if profile.version > CURRENT_VERSION {
+        if parsed.version > CURRENT_VERSION {
             return Err(ConfigError::UnsupportedVersion {
-                found: profile.version,
+                found: parsed.version,
             });
         }
-        Ok(profile)
+        Ok(parsed)
     }
 
     /// Load `path`, or return an empty configuration if the file does not exist yet.
     pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
-        match Profile::load(path) {
+        match Config::load(path) {
             Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                Ok(Profile::default())
+                Ok(Config::default())
             }
             other => other,
         }
@@ -189,11 +189,11 @@ impl Profile {
     }
 
     /// The stored settings for a monitor, if we have ever seen it.
-    pub fn find(&self, identity: &DisplayIdentity) -> Option<&DisplayProfile> {
+    pub fn find(&self, identity: &DisplayIdentity) -> Option<&DisplayConfig> {
         self.best_index(identity).map(|i| &self.displays[i])
     }
 
-    pub fn find_mut(&mut self, identity: &DisplayIdentity) -> Option<&mut DisplayProfile> {
+    pub fn find_mut(&mut self, identity: &DisplayIdentity) -> Option<&mut DisplayConfig> {
         self.best_index(identity)
             .map(move |i| &mut self.displays[i])
     }
@@ -209,7 +209,7 @@ impl Profile {
     }
 
     /// Get the settings for a monitor, creating defaults on first sight.
-    pub fn entry(&mut self, identity: &DisplayIdentity) -> &mut DisplayProfile {
+    pub fn entry(&mut self, identity: &DisplayIdentity) -> &mut DisplayConfig {
         match self.best_index(identity) {
             Some(i) => {
                 // Refresh the identity so a monitor that moved to another port
@@ -219,7 +219,7 @@ impl Profile {
                 &mut self.displays[i]
             }
             None => {
-                self.displays.push(DisplayProfile::new(identity.clone()));
+                self.displays.push(DisplayConfig::new(identity.clone()));
                 self.displays.last_mut().unwrap()
             }
         }
@@ -365,7 +365,7 @@ falloff = 1.3
 
     #[test]
     fn parses_the_specifications_example_file() {
-        let profile: Profile = toml::from_str(SPEC_EXAMPLE).unwrap();
+        let profile: Config = toml::from_str(SPEC_EXAMPLE).unwrap();
         assert_eq!(profile.version, 1);
         assert_eq!(profile.displays.len(), 1);
 
@@ -387,7 +387,7 @@ falloff = 1.3
 
     #[test]
     fn omitted_fields_take_sensible_defaults() {
-        let profile: Profile =
+        let profile: Config =
             toml::from_str("version = 1\n[[display]]\nconnector = \"DP-1\"\n").unwrap();
         let display = &profile.displays[0];
         assert!(display.enabled);
@@ -402,7 +402,7 @@ falloff = 1.3
         // They are fixed in the model now, but a file written before that has
         // to keep loading -- silently, and without losing anything else on the
         // way past.
-        let profile: Profile = toml::from_str(
+        let profile: Config = toml::from_str(
             "version = 1\n\
              [[display]]\n\
              connector = \"DP-1\"\n\
@@ -425,7 +425,7 @@ falloff = 1.3
 
     #[test]
     fn round_trips_through_toml() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         let display = profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             model: Some("QN90".into()),
@@ -439,7 +439,7 @@ falloff = 1.3
 
         let text = toml::to_string(&profile).unwrap();
         assert!(text.contains("center = [0.62, 0.43]"), "{text}");
-        let back: Profile = toml::from_str(&text).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
         // Compared as written rather than by value: defect ids are runtime
         // handles, minted afresh on load and absent from the file.
         assert_eq!(toml::to_string(&back).unwrap(), text);
@@ -452,7 +452,7 @@ falloff = 1.3
         let path = dir.join("future.toml");
         fs::write(&path, "version = 99\n").unwrap();
         assert!(matches!(
-            Profile::load(&path),
+            Config::load(&path),
             Err(ConfigError::UnsupportedVersion { found: 99 })
         ));
         fs::remove_dir_all(&dir).ok();
@@ -465,7 +465,7 @@ falloff = 1.3
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let profile = Profile::load_or_default(&path).unwrap();
+        let profile = Config::load_or_default(&path).unwrap();
         assert!(profile.displays.is_empty());
     }
 
@@ -473,19 +473,19 @@ falloff = 1.3
     fn saving_and_loading_preserves_everything() {
         let dir = std::env::temp_dir().join(format!("unburn-save-{}", std::process::id()));
         let path = dir.join("config.toml");
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             ..Default::default()
         });
         profile.save(&path).unwrap();
-        assert_eq!(Profile::load(&path).unwrap(), profile);
+        assert_eq!(Config::load(&path).unwrap(), profile);
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn entry_reuses_a_known_display_and_refreshes_its_identity() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             serial: Some("ABC".into()),
@@ -515,7 +515,7 @@ falloff = 1.3
 
     #[test]
     fn swapping_the_monitor_on_a_port_leaves_the_old_settings_alone() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         let tv = profile.entry(&living_room_tv());
         tv.name = "Living Room TV".into();
         tv.compensation = 0.82;
@@ -537,7 +537,7 @@ falloff = 1.3
 
     #[test]
     fn a_session_that_cannot_read_edid_keeps_what_an_earlier_one_learned() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         profile.entry(&living_room_tv());
 
         // The same panel as a Wayland client sees it: no serial, no EDID, and a
@@ -560,7 +560,7 @@ falloff = 1.3
     /// round trip must not disturb it.
     #[test]
     fn saving_and_loading_preserves_the_order_of_defects() {
-        let mut profile = Profile::default();
+        let mut profile = Config::default();
         let display = profile.entry(&DisplayIdentity::default());
         for x in [0.1, 0.5, 0.9] {
             display.defects.push(Defect::Radial(RadialDefect {
@@ -569,7 +569,7 @@ falloff = 1.3
             }));
         }
 
-        let back: Profile = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
+        let back: Config = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
         let centers: Vec<f32> = back.displays[0]
             .defects
             .iter()

@@ -1,6 +1,6 @@
 //! Identifying monitors and describing their geometry.
 //!
-//! A profile is worthless if it lands on the wrong screen after a reboot, so
+//! Saved settings are worthless if they land on the wrong screen after a reboot, so
 //! displays are matched on whatever stable information the platform hands us —
 //! never on their position in the desktop layout.
 
@@ -75,10 +75,10 @@ impl DisplayIdentity {
     /// without disturbing anything already known.
     ///
     /// Deliberately the opposite precedence to [`Self::refresh_from`]: what the
-    /// display server itself reported always wins. Two reasons. A profile saved
-    /// before an identity source existed holds the display server's spelling of
+    /// display server itself reported always wins. Two reasons. Settings saved
+    /// before an identity source existed hold the display server's spelling of
     /// the model, and overwriting it with a differently-spelled equivalent would
-    /// read as a contradiction and orphan that profile. And a display server
+    /// read as a contradiction and orphan those settings. And a display server
     /// naming an output is authoritative about that output, whereas the extra
     /// source is only ever filling in what the protocol had no field for.
     pub fn fill_gaps_from(&mut self, extra: &Self) {
@@ -422,7 +422,7 @@ mod tests {
     }
 
     /// The reason this program exists is to not paint one panel's burn-in onto
-    /// another, so a swap on the same port must never inherit a profile.
+    /// another, so a swap on the same port must never inherit the old settings.
     #[test]
     fn a_replacement_monitor_on_the_same_port_does_not_match() {
         let mut stored = ident("HDMI-A-1", "QN90", Some("ABC"));

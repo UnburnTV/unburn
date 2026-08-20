@@ -27,7 +27,7 @@ enum Command {
     Apply(Box<DesiredState>),
     /// Re-enumerate outputs and rebuild everything.
     Refresh,
-    /// Remove every overlay immediately, without touching the profile.
+    /// Remove every overlay immediately, without touching the configuration.
     TearDown,
     Shutdown,
 }
@@ -135,7 +135,7 @@ impl OverlayService {
         self.send(Command::Refresh);
     }
 
-    /// Drop every overlay at once, leaving the profile untouched.
+    /// Drop every overlay at once, leaving the configuration untouched.
     pub fn tear_down(&self) {
         self.send(Command::TearDown);
     }

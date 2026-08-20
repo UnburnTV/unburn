@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     cli::{Args, BackendChoice},
     compensation::{Defect, RadialDefect, Vec2},
-    config::{self, DisplayProfile, Profile},
+    config::{self, Config, DisplayConfig},
     display::{DisplayIdentity, OutputInfo},
     ipc,
     overlay::{DiscSwatch, ShowMode, TestPattern, TestPatternState},
@@ -37,7 +37,7 @@ const MAX_FALLOFF: f32 = 4.0;
 pub const MAX_STRENGTH: f32 = 5.0;
 
 pub struct App {
-    pub profile: Profile,
+    pub config: Config,
     config_path: PathBuf,
 
     service: Option<OverlayService>,
@@ -73,7 +73,7 @@ impl App {
     /// caller's main loop can stay asleep the rest of the time.
     pub fn start(args: &Args, wake: Sender<()>) -> Result<App, String> {
         let config_path = config::config_path().map_err(|e| e.to_string())?;
-        let profile = Profile::load_or_default(&config_path).map_err(|e| e.to_string())?;
+        let loaded = Config::load_or_default(&config_path).map_err(|e| e.to_string())?;
 
         if let Ok(dir) = config::config_dir() {
             if let Some(path) = config::leftover_named_profiles(&dir) {
@@ -88,7 +88,7 @@ impl App {
         }
 
         let mut app = App {
-            profile,
+            config: loaded,
             config_path,
             service: None,
             reports: platform::detect(),
@@ -122,21 +122,21 @@ impl App {
         Ok(app)
     }
 
-    /// An app that never touches a display server, working from the profile,
+    /// An app that never touches a display server, working from the configuration,
     /// monitors and backend reports it is handed.
     ///
     /// Everything the calibration window draws comes from here, so the window
     /// can be rendered on a machine that has neither the monitor nor the
-    /// compositor the profile describes. That is what the documentation
+    /// compositor the configuration describes. That is what the documentation
     /// screenshot tool uses; nothing else should need it.
     pub fn offline(
-        profile: Profile,
+        config: Config,
         config_path: PathBuf,
         outputs: Vec<OutputInfo>,
         reports: Vec<BackendReport>,
     ) -> App {
         let mut app = App {
-            profile,
+            config,
             config_path,
             service: None,
             reports,
@@ -306,9 +306,9 @@ impl App {
     /// Make sure every connected monitor has an entry to configure.
     pub fn adopt_connected_displays(&mut self) {
         for output in self.outputs() {
-            let known = self.profile.find(&output.identity).is_some();
+            let known = self.config.find(&output.identity).is_some();
             if !known {
-                let entry = self.profile.entry(&output.identity);
+                let entry = self.config.entry(&output.identity);
                 entry.name = output.identity.describe();
                 debug!(display = %entry.name, "first sight of this monitor");
             }
@@ -318,7 +318,7 @@ impl App {
                 .outputs()
                 .first()
                 .map(|o| o.identity.clone())
-                .or_else(|| self.profile.displays.first().map(|d| d.identity.clone()));
+                .or_else(|| self.config.displays.first().map(|d| d.identity.clone()));
             self.selected_defect = self.first_defect();
         }
     }
@@ -331,14 +331,14 @@ impl App {
 
     // ---- selection -------------------------------------------------------
 
-    pub fn selected_display(&self) -> Option<&DisplayProfile> {
+    pub fn selected_display(&self) -> Option<&DisplayConfig> {
         let identity = self.selected_display.as_ref()?;
-        self.profile.find(identity)
+        self.config.find(identity)
     }
 
-    pub fn selected_display_mut(&mut self) -> Option<&mut DisplayProfile> {
+    pub fn selected_display_mut(&mut self) -> Option<&mut DisplayConfig> {
         let identity = self.selected_display.clone()?;
-        self.profile.find_mut(&identity)
+        self.config.find_mut(&identity)
     }
 
     pub fn select_display(&mut self, identity: DisplayIdentity) {
@@ -464,7 +464,7 @@ impl App {
     }
 
     pub fn save(&mut self) -> Result<(), String> {
-        self.profile
+        self.config
             .save(&self.config_path)
             .map_err(|e| e.to_string())?;
         self.unsaved = false;
@@ -474,8 +474,8 @@ impl App {
 
     /// Load the configuration file from disk, discarding unsaved edits.
     pub fn reload(&mut self) -> Result<(), String> {
-        let profile = Profile::load_or_default(&self.config_path).map_err(|e| e.to_string())?;
-        self.profile = profile;
+        let loaded = Config::load_or_default(&self.config_path).map_err(|e| e.to_string())?;
+        self.config = loaded;
         self.unsaved = false;
         self.selected_display = None;
         self.selected_defect = None;
@@ -506,7 +506,7 @@ impl App {
         let showing_pattern = self.test_pattern.is_some();
 
         let displays = self
-            .profile
+            .config
             .displays
             .iter()
             .map(|display| {
@@ -540,14 +540,14 @@ impl App {
                 show: self.show_mode,
             }),
             calibration_disc: self.calibration_disc.and_then(|id| {
-                self.profile
+                self.config
                     .displays
                     .iter()
                     .find(|d| d.defects.iter().any(|defect| defect.id() == id))
                     .map(|d| (d.identity.clone(), id))
             }),
             hovered: self.hovered_defect.and_then(|id| {
-                self.profile
+                self.config
                     .displays
                     .iter()
                     .find(|d| d.defects.iter().any(|defect| defect.id() == id))
@@ -690,7 +690,7 @@ impl App {
     /// One line describing what is on screen, for `unburn status`.
     pub fn status_line(&self) -> String {
         let active = self
-            .profile
+            .config
             .displays
             .iter()
             .filter(|d| d.enabled && has_effect(d))
@@ -722,7 +722,7 @@ impl App {
 ///
 /// Either sign counts: a bright spot is dimmed where it sits, a dim patch is
 /// matched by dimming everything else.
-pub fn has_effect(display: &DisplayProfile) -> bool {
+pub fn has_effect(display: &DisplayConfig) -> bool {
     display.compensation > 0.0
         && display
             .defects
@@ -757,8 +757,8 @@ mod tests {
     use super::*;
     use crate::compensation::RadialDefect;
 
-    fn display_with(strength: f32, enabled: bool) -> DisplayProfile {
-        let mut display = DisplayProfile::new(DisplayIdentity {
+    fn display_with(strength: f32, enabled: bool) -> DisplayConfig {
+        let mut display = DisplayConfig::new(DisplayIdentity {
             connector: Some("HDMI-A-1".into()),
             ..Default::default()
         });
@@ -842,17 +842,17 @@ mod tests {
             ..Default::default()
         };
 
-        let mut on_disk = Profile::default();
+        let mut on_disk = Config::default();
         on_disk.entry(&identity).compensation = 0.4;
         on_disk.save(&path).unwrap();
 
-        let mut live = Profile::default();
+        let mut live = Config::default();
         live.entry(&identity).compensation = 0.9;
 
         let mut app = App::offline(live, path, vec![], vec![]);
         app.reload().unwrap();
 
-        assert_eq!(app.profile.displays[0].compensation, 0.4);
+        assert_eq!(app.config.displays[0].compensation, 0.4);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
