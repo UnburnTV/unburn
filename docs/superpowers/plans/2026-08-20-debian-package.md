@@ -66,17 +66,13 @@ test -f "$package"
 test "$(dpkg-deb --field "$package" Package)" = "unburn"
 test "$(dpkg-deb --field "$package" Version)" = "$version"
 test "$(dpkg-deb --field "$package" Architecture)" = "$architecture"
-case "$(dpkg-deb --field "$package" Depends)" in
-    *libc6*libgcc-s1*libxkbcommon0*) ;;
-    *)
-        echo "build-deb test: package dependencies are incomplete" >&2
-        exit 1
-        ;;
-esac
+expected_dependencies="libc6, libgcc-s1, libegl1, libgl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrender1"
+test "$(dpkg-deb --field "$package" Depends)" = "$expected_dependencies"
 
 dpkg-deb --extract "$package" "$extract_dir"
 test -x "$extract_dir/usr/bin/unburn"
 test -f "$extract_dir/usr/share/applications/unburn.desktop"
+test -f "$extract_dir/usr/share/doc/unburn/copyright"
 echo "build-deb test: passed"
 ```
 
@@ -88,13 +84,13 @@ Expected: FAIL because `scripts/build-deb.sh` does not exist.
 
 - [ ] **Step 3: Implement the package builder**
 
-Create `scripts/build-deb.sh` with strict shell error handling. Validate the tag, compare its stripped version to the package version returned by `cargo metadata`, run `cargo build --locked --release --bin unburn`, stage the binary and desktop entry under a temporary package root, write Debian control metadata, and call:
+Create `scripts/build-deb.sh` with strict shell error handling. Validate the tag, compare its stripped version to the package version returned by `cargo +nightly metadata`, run `cargo +nightly build --locked --release --bin unburn`, stage the binary, desktop entry, and copyright metadata under a temporary package root, write Debian control metadata, and call:
 
 ```sh
 dpkg-deb --root-owner-group --build "$package_root" "$output"
 ```
 
-The package declares runtime dependencies on `libc6`, `libgcc-s1`, and `libxkbcommon0`.
+The package declares the linked and dynamically loaded Ubuntu runtime libraries used by the Wayland and X11 GUI backends.
 
 - [ ] **Step 4: Run the package test and verify it passes without installing**
 
@@ -109,7 +105,7 @@ Expected: PASS and a package under `dist/`; no package installation occurs.
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: Git tags matching `v*` and `scripts/build-deb.sh`.
+- Consumes: Git tags matching `v[0-9]+.[0-9]+.[0-9]+` and `scripts/build-deb.sh`.
 - Produces: an installed-and-smoke-tested package uploaded as a GitHub Actions artifact.
 
 - [ ] **Step 1: Add a static workflow test**
@@ -126,7 +122,7 @@ assert_workflow_contains() {
     fi
 }
 
-assert_workflow_contains '- "v*"'
+assert_workflow_contains '- "v[0-9]+.[0-9]+.[0-9]+"'
 assert_workflow_contains './scripts/build-deb.sh "${{ github.ref_name }}"'
 assert_workflow_contains 'sudo apt-get install -y ./dist/*.deb'
 assert_workflow_contains 'installed_version=$(unburn --version)'
@@ -141,7 +137,7 @@ Expected: FAIL because the workflow does not yet define tag packaging.
 
 - [ ] **Step 3: Add the tag packaging job**
 
-Add `tags: [ 'v*' ]` to the push trigger. Add a package job gated by `startsWith(github.ref, 'refs/tags/v')` that installs build dependencies, installs Rust, runs `scripts/build-deb.sh "${{ github.ref_name }}"`, installs `dist/*.deb` with `apt-get`, verifies `unburn --version` equals the tag version, and uploads `dist/*.deb`.
+Add `v[0-9]+.[0-9]+.[0-9]+` to the push tag trigger. Add a package job gated by `startsWith(github.ref, 'refs/tags/v')` that installs build dependencies, installs Rust nightly, runs `scripts/build-deb.sh "${{ github.ref_name }}"`, installs `dist/*.deb` with `apt-get`, verifies `unburn --version` equals the tag version, and uploads `dist/*.deb`.
 
 - [ ] **Step 4: Document local package construction**
 

@@ -2,14 +2,14 @@
 set -eu
 
 if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 vX.Y.Z" >&2
+    echo "Usage: build-deb.sh vX.Y.Z" >&2
     exit 2
 fi
 
 tag=$1
 if ! printf '%s\n' "$tag" |
     awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { valid = 1 } END { exit !valid }'; then
-    echo "build-deb: release tag must have the form vX.Y.Z: $tag" >&2
+    echo "build-deb: release tag must have the form vX.Y.Z" >&2
     exit 2
 fi
 version=${tag#v}
@@ -49,6 +49,8 @@ cargo +nightly build --locked --release --bin unburn
 install -Dm755 "$target_dir/release/unburn" "$package_root/usr/bin/unburn"
 install -Dm644 packaging/unburn.desktop \
     "$package_root/usr/share/applications/unburn.desktop"
+install -Dm644 packaging/copyright \
+    "$package_root/usr/share/doc/unburn/copyright"
 mkdir -p "$package_root/DEBIAN" "$output_dir"
 
 cat >"$package_root/DEBIAN/control" <<EOF
@@ -58,7 +60,7 @@ Section: utils
 Priority: optional
 Architecture: $architecture
 Maintainer: unburn maintainers <noreply@unburn.tv>
-Depends: libc6, libgcc-s1, libxkbcommon0
+Depends: libc6, libgcc-s1, libegl1, libgl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrender1
 Homepage: https://unburn.tv
 Description: Display uniformity compensation overlay
  Corrects OLED and LCD brightness defects with a configurable overlay.

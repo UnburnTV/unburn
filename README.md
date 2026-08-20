@@ -16,6 +16,8 @@ Build an Ubuntu-compatible Debian package for a release tag:
 ./scripts/build-deb.sh v0.1.0
 ```
 
-The tag version must match the version in `Cargo.toml`. The package is written
-to `dist/`. GitHub Actions builds, installs, verifies, and uploads the package
-when a `vX.Y.Z` tag is pushed. Local package builds do not install the package.
+The build requires the Rust nightly toolchain, Python 3, and Debian package
+tools. The tag version must match the version in `Cargo.toml`. The package is
+written to `dist/`. GitHub Actions builds, installs, verifies, and uploads the
+package when a `vX.Y.Z` tag is pushed. Local package builds do not install the
+package.
