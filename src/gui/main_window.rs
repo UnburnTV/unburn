@@ -698,7 +698,7 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         paint_icon(ui, &load, BtnIcon::Load, None);
         if load
             .response
-            .on_hover_text("Load the configuration file from disk")
+            .on_hover_text("Discard unsaved edits and load the configuration file from disk")
             .clicked()
         {
             reload_config(app, state);

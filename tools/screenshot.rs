@@ -61,6 +61,7 @@ fn main() -> Result<(), String> {
     let (profile, outputs) = staged_profile();
     let mut app = App::offline(
         profile,
+        PathBuf::from(SHOWN_CONFIG_HOME).join("unburn/config.toml"),
         outputs,
         vec![BackendReport {
             kind: BackendKind::X11,

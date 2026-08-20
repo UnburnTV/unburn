@@ -75,6 +75,18 @@ impl App {
         let config_path = config::config_path().map_err(|e| e.to_string())?;
         let profile = Profile::load_or_default(&config_path).map_err(|e| e.to_string())?;
 
+        if let Ok(dir) = config::config_dir() {
+            if let Some(path) = config::leftover_named_profiles(&dir) {
+                warn!(
+                    path = %path.display(),
+                    "named profile files are ignored; copy the settings you want into config.toml"
+                );
+            }
+        }
+        if let Err(error) = config::repair_autostart() {
+            warn!(%error, "could not update the login entry");
+        }
+
         let mut app = App {
             profile,
             config_path,
@@ -117,10 +129,15 @@ impl App {
     /// can be rendered on a machine that has neither the monitor nor the
     /// compositor the profile describes. That is what the documentation
     /// screenshot tool uses; nothing else should need it.
-    pub fn offline(profile: Profile, outputs: Vec<OutputInfo>, reports: Vec<BackendReport>) -> App {
+    pub fn offline(
+        profile: Profile,
+        config_path: PathBuf,
+        outputs: Vec<OutputInfo>,
+        reports: Vec<BackendReport>,
+    ) -> App {
         let mut app = App {
             profile,
-            config_path: config::config_path().unwrap_or_else(|_| PathBuf::from("config.toml")),
+            config_path,
             service: None,
             reports,
             offline_outputs: outputs,
@@ -462,6 +479,7 @@ impl App {
         self.unsaved = false;
         self.selected_display = None;
         self.selected_defect = None;
+        self.hovered_defect = None;
         self.editing = false;
         self.calibration_disc = None;
         self.adopt_connected_displays();
@@ -831,8 +849,7 @@ mod tests {
         let mut live = Profile::default();
         live.entry(&identity).compensation = 0.9;
 
-        let mut app = App::offline(live, vec![], vec![]);
-        app.config_path = path;
+        let mut app = App::offline(live, path, vec![], vec![]);
         app.reload().unwrap();
 
         assert_eq!(app.profile.displays[0].compensation, 0.4);

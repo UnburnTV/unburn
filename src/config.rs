@@ -274,17 +274,7 @@ pub fn set_autostart(enabled: bool) -> Result<(), ConfigError> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "unburn".to_string());
     let command = format!("{exe} start");
-
-    let desktop = format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name=unburn\n\
-         Comment=Display uniformity compensation overlay\n\
-         Exec={command}\n\
-         Terminal=false\n\
-         Categories=Utility;\n\
-         X-GNOME-Autostart-enabled=true\n"
-    );
+    let desktop = autostart_desktop(&command);
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
@@ -293,6 +283,48 @@ pub fn set_autostart(enabled: bool) -> Result<(), ConfigError> {
         })?;
     }
     fs::write(&path, desktop).map_err(|source| ConfigError::Write { path, source })
+}
+
+fn autostart_desktop(command: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=unburn\n\
+         Comment=Display uniformity compensation overlay\n\
+         Exec={command}\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+fn autostart_mentions_profile(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("Exec=") && line.contains("--profile")
+    })
+}
+
+/// Rewrite a login entry left over from named profiles, which this build rejects.
+pub fn repair_autostart() -> Result<(), ConfigError> {
+    let path = autostart_path()?;
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    if !autostart_mentions_profile(&text) {
+        return Ok(());
+    }
+    set_autostart(true)
+}
+
+/// Directory of leftover named-profile files, if any still sit next to `config.toml`.
+pub fn leftover_named_profiles(dir: &Path) -> Option<PathBuf> {
+    let profiles = dir.join("profiles");
+    let entries = fs::read_dir(&profiles).ok()?;
+    let has_toml = entries
+        .flatten()
+        .any(|e| e.path().extension().is_some_and(|ext| ext == "toml"));
+    has_toml.then_some(profiles)
 }
 
 #[cfg(test)]
@@ -558,5 +590,29 @@ falloff = 1.3
             !path.components().any(|c| c.as_os_str() == "profiles"),
             "{path:?}"
         );
+    }
+
+    #[test]
+    fn leftover_named_profile_files_are_detected() {
+        let dir = std::env::temp_dir().join(format!("unburn-legacy-{}", uuid::Uuid::new_v4()));
+        let profiles = dir.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        assert_eq!(leftover_named_profiles(&dir), None);
+        fs::write(profiles.join("tv.toml"), "version = 1\n").unwrap();
+        assert_eq!(leftover_named_profiles(&dir), Some(profiles));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_login_entry_must_not_name_a_profile() {
+        let desktop = autostart_desktop("/usr/bin/unburn start");
+        assert!(
+            desktop.contains("Exec=/usr/bin/unburn start\n"),
+            "{desktop}"
+        );
+        assert!(!autostart_mentions_profile(&desktop));
+        assert!(autostart_mentions_profile(
+            "Exec=/usr/bin/unburn start --profile living-room\n"
+        ));
     }
 }

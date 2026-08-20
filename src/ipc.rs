@@ -236,14 +236,15 @@ mod tests {
         assert_eq!(Request::parse(""), None);
     }
 
-    fn unique_socket() -> PathBuf {
+    fn unique_socket() -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "unburn-ipc-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&dir).unwrap();
-        dir.join("unburn.sock")
+        let path = dir.join("unburn.sock");
+        (dir, path)
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
 
     #[test]
     fn a_client_reaches_the_server() {
-        let path = unique_socket();
+        let (dir, path) = unique_socket();
         let server = bind_at(path.clone(), || {}).unwrap();
         server.publish_status("compensation on".into());
 
@@ -279,15 +280,19 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        drop(server);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_second_instance_is_refused() {
-        let path = unique_socket();
+        let (dir, path) = unique_socket();
         let _first = bind_at(path.clone(), || {}).unwrap();
         assert!(matches!(
             bind_at(path, || {}),
             Err(BindError::AlreadyRunning(_))
         ));
+        drop(_first);
+        fs::remove_dir_all(&dir).ok();
     }
 }
