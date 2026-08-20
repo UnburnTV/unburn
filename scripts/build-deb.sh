@@ -8,7 +8,11 @@ fi
 
 tag=$1
 if ! printf '%s\n' "$tag" |
-    awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { valid = 1 } END { exit !valid }'; then
+    awk '
+        NR == 1 && /^v[0-9]+\.[0-9]+\.[0-9]+$/ { valid = 1; next }
+        { invalid = 1 }
+        END { exit !(valid && !invalid && NR == 1) }
+    '; then
     echo "build-deb: release tag must have the form vX.Y.Z" >&2
     exit 2
 fi

@@ -55,6 +55,9 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Run packaging tests
+        run: tests/build-deb.sh
+
   package:
     name: Build Ubuntu package
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/test-release'
@@ -106,9 +109,10 @@ jobs:
 
       - name: Install and verify Debian package
         run: |
+          package=$(printf '%s\n' ./dist/*.deb)
+          expected_version="unburn $(dpkg-deb --field "$package" Version)"
           sudo apt-get install -y ./dist/*.deb
           installed_version=$(unburn --version)
-          expected_version="unburn ${GITHUB_REF_NAME#v}"
           test "$installed_version" = "$expected_version"
           echo "Installed $installed_version"
 
