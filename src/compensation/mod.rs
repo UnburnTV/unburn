@@ -5,12 +5,14 @@
 //! the model stays deterministically testable.
 
 pub mod defect;
+pub mod ellipse;
 pub mod mask;
 pub mod radial;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use defect::{Defect, DefectModel};
+pub use ellipse::{angle_in_square, normalize_rotation, Ellipse};
 pub use mask::{Mask, MaskParams, MaskQuality};
 pub use radial::RadialDefect;
 

@@ -285,9 +285,9 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
 
                 let edit = icon_button("Edit").selected(params_this).atom_ui(ui);
                 paint_icon(ui, &edit, BtnIcon::Edit, None);
-                let edit_resp = edit.response.on_hover_text(
-                    "Show strength, falloff and preview disc colours for this spot",
-                );
+                let edit_resp = edit
+                    .response
+                    .on_hover_text("Show strength, falloff and preview disc colours for this spot");
                 if edit_resp.clicked() {
                     if params_this {
                         state.params_open = None;
@@ -305,7 +305,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
                 paint_icon(ui, &move_btn, BtnIcon::Move, None);
                 let move_resp = move_btn.response.on_hover_text(
                     "Drag this spot on the screen: wheel to resize, Shift+wheel for \
-strength, Esc or a click on empty screen to leave",
+strength, Alt+wheel or the outer handle to rotate, Esc or a click on empty screen to leave",
                 );
                 if move_resp.clicked() {
                     if moving_this {
@@ -318,9 +318,11 @@ strength, Esc or a click on empty screen to leave",
                         app.select_defect(Some(*id));
                         app.set_editing(true);
                         state.notice(
-                            "The overlay is now interactive: drag the spot onto the blemish, \
-wheel to resize, Shift+wheel for strength, n for a new spot, Esc or a click on empty screen to leave. \
-The correction is not drawn while moving; it comes back when you leave.",
+                            "The overlay is now interactive, and it takes the whole screen: use it \
+rather than this window until you leave. Drag the spot onto the blemish, wheel to resize, \
+Shift+wheel for strength, Alt+wheel or the handle on the arm to rotate, n for a new spot, \
+Esc or a click on empty screen to leave. The correction is not drawn while moving; it comes \
+back when you leave.",
                         );
                     }
                 }
@@ -356,9 +358,7 @@ The correction is not drawn while moving; it comes back when you leave.",
             hovered = Some(*id);
         }
 
-        let moving_this = app.is_editing() && app.selected_defect() == Some(*id);
-        let params_this = state.params_open == Some(*id);
-        if moving_this || params_this {
+        if state.params_open == Some(*id) {
             if let Some(radial) = app
                 .selected_display()
                 .and_then(|d| d.defects.iter().find(|d| d.id() == *id))
@@ -366,16 +366,9 @@ The correction is not drawn while moving; it comes back when you leave.",
                 .cloned()
             {
                 ui.indent(*id, |ui| {
-                    if moving_this {
-                        ui.group(|ui| {
-                            rotation_slider(ui, app, *id, radial.rotation);
-                        });
-                    }
-                    if params_this {
-                        ui.group(|ui| {
-                            spot_params(ui, app, state, *id, radial);
-                        });
-                    }
+                    ui.group(|ui| {
+                        spot_params(ui, app, state, *id, radial);
+                    });
                 });
             }
         }
@@ -414,27 +407,9 @@ fn spot_params(
     radial: RadialDefect,
 ) {
     size_sliders_for_table(ui);
-    strength_and_falloff(ui, app, state, id, radial);
+    spot_sliders(ui, app, state, id, radial);
     ui.add_space(8.0);
     disc_color_pickers(ui, app);
-}
-
-fn rotation_slider(ui: &mut egui::Ui, app: &mut App, id: Uuid, rotation: f32) {
-    size_sliders_for_table(ui);
-    let mut degrees = rotation.to_degrees();
-    egui::Grid::new(("spot_rotation", id))
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Rotation");
-            if ui
-                .add(Slider::new(&mut degrees, -90.0..=90.0).suffix("°"))
-                .changed()
-            {
-                app.edit_defect(id, |d| d.rotation = degrees.to_radians());
-            }
-            ui.end_row();
-        });
 }
 
 /// Leave the value box in the slider cell so every rail starts at the same x.
@@ -517,12 +492,18 @@ fn colored_checkbox(ui: &mut egui::Ui, on: &mut bool, swatch: DiscSwatch) -> egu
     .inner
 }
 
-/// How much brighter than the rest of the panel the spot is, per channel.
+/// Everything about one spot that is a number rather than a place.
 ///
-/// One slider while the spot is neutral, three once it is not: a tinted patch
-/// needs different amounts taken out of each channel, and collapsing that back
-/// to a single number would silently throw the calibration away.
-fn strength_and_falloff(
+/// Strength is one slider while the spot is neutral and three once it is not: a
+/// tinted patch needs different amounts taken out of each channel, and
+/// collapsing that back to a single number would silently throw the calibration
+/// away.
+///
+/// These live here rather than beside Move because the interactive overlay
+/// covers this window and takes every click while a spot is being moved. A
+/// slider under Move could not be reached; the first press would land on the
+/// overlay and end the move instead.
+fn spot_sliders(
     ui: &mut egui::Ui,
     app: &mut App,
     state: &mut UiState,
@@ -551,6 +532,8 @@ fn strength_and_falloff(
     let limit = crate::app::MAX_STRENGTH * 100.0;
     let mut falloff = radial.falloff;
     let mut falloff_changed = false;
+    let mut degrees = radial.rotation.to_degrees();
+    let mut rotation_changed = false;
 
     egui::Grid::new(("spot_sliders", id))
         .num_columns(2)
@@ -576,9 +559,29 @@ fn strength_and_falloff(
                 ui.end_row();
             }
 
+            // Directly under the rails it describes, since falloff and
+            // rotation follow and are not brightness at all.
+            ui.label("");
+            ui.label(
+                RichText::new("How much brighter than the rest of the panel this spot is.")
+                    .small()
+                    .weak(),
+            );
+            ui.end_row();
+
             ui.label("Falloff");
             falloff_changed |= ui
                 .add(Slider::new(&mut falloff, 0.2..=4.0).fixed_decimals(2))
+                .changed();
+            ui.end_row();
+
+            ui.label("Rotation");
+            rotation_changed |= ui
+                .add(Slider::new(&mut degrees, -180.0..=180.0).suffix("°"))
+                .on_hover_text(
+                    "Turn an oval spot onto the blemish. Press Move to drag the same \
+angle on screen instead",
+                )
                 .changed();
             ui.end_row();
         });
@@ -589,11 +592,9 @@ fn strength_and_falloff(
     if falloff_changed {
         app.edit_defect(id, |d| d.falloff = falloff);
     }
-    ui.label(
-        RichText::new("How much brighter than the rest of the panel this spot is.")
-            .small()
-            .weak(),
-    );
+    if rotation_changed {
+        app.edit_defect(id, |d| d.rotation = degrees.to_radians());
+    }
 }
 
 fn confirm_delete_dialog(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {

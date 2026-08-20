@@ -35,7 +35,7 @@ const DEFAULT_OUTPUT: &str = "docs/edit-mode.png";
 
 /// Window size in points. Tall enough that the whole window fits without a
 /// scrollbar, which is the only thing that would misrepresent it.
-const DEFAULT_SIZE: [f32; 2] = [1040.0, 665.0];
+const DEFAULT_SIZE: [f32; 2] = [1040.0, 700.0];
 
 /// Time to let egui settle before the shutter. The enable switch animates when
 /// it first appears, and catching it mid-travel would look like a rendering

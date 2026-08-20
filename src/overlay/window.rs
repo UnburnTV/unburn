@@ -52,7 +52,7 @@ impl OverlaySurface {
     }
 
     /// Highlight the resize handle under the pointer.
-    pub fn set_handle_hover(&mut self, center: Option<crate::compensation::Vec2>) {
+    pub fn set_handle_hover(&mut self, center: Option<Vec2>) {
         self.renderer.set_handle_hover(center);
     }
 
@@ -61,7 +61,7 @@ impl OverlaySurface {
     }
 
     /// Red cross over a spot the GUI is pointing at. Does not resample.
-    pub fn set_hover(&mut self, center: Option<crate::compensation::Vec2>) {
+    pub fn set_hover(&mut self, center: Option<Vec2>) {
         self.renderer.set_hover(center);
     }
 
@@ -99,17 +99,20 @@ impl OverlaySurface {
 }
 
 /// Express a panel-space defect in the coordinates of a rotated surface.
-pub fn transform_defect(defect: &Defect, transform: Transform) -> Defect {
+///
+/// `panel_aspect` is the panel's width over its height with the rotation undone,
+/// which is the frame the stored geometry is written in.
+pub fn transform_defect(defect: &Defect, transform: Transform, panel_aspect: f32) -> Defect {
     if transform == Transform::Normal {
         return defect.clone();
     }
     match defect {
         Defect::Radial(radial) => {
+            let shape = crate::overlay::ellipse_to_surface(radial.ellipse(panel_aspect), transform);
             let mut moved = radial.clone();
-            moved.center = transform.panel_to_surface(radial.center);
-            let axis = Vec2::new(radial.rotation.cos(), radial.rotation.sin());
-            let mapped = transform.direction_to_surface(axis);
-            moved.rotation = mapped.y.atan2(mapped.x);
+            moved.center = shape.center;
+            moved.radius = shape.radius;
+            moved.rotation = shape.rotation;
             Defect::Radial(moved)
         }
     }

@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use uuid::Uuid;
 
 use crate::{
-    compensation::Vec2,
+    compensation::{angle_in_square, Vec2},
     display::Transform,
     overlay::{EditorView, Grab},
 };
@@ -20,6 +20,9 @@ const WHEEL_RADIUS_STEP: f32 = 1.08;
 const WHEEL_STRENGTH_STEP: f32 = 0.005;
 /// Falloff change per wheel notch.
 const WHEEL_FALLOFF_STEP: f32 = 0.05;
+/// Rotation change per wheel notch, in radians. Two degrees: fine enough to
+/// line a spot up by eye, coarse enough to cross a quarter turn by hand.
+const WHEEL_ROTATION_STEP: f32 = std::f32::consts::PI / 90.0;
 
 /// Keys the overlay reacts to while it is interactive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +65,14 @@ pub enum EditorAction {
         id: Uuid,
         radius: f32,
     },
+    SetRotation {
+        id: Uuid,
+        rotation: f32,
+    },
+    AdjustRotation {
+        id: Uuid,
+        delta: f32,
+    },
     ScaleRadius {
         id: Uuid,
         factor: f32,
@@ -96,6 +107,10 @@ struct Grabbed {
     grab: Grab,
     /// Pointer minus the grabbed point at the moment of the press.
     offset: Vec2,
+    /// For a rotation grab, the angle between the spot's own axis and the
+    /// direction the press came from, so a handle taken slightly off centre
+    /// does not snap the spot round to meet the pointer.
+    turn: f32,
 }
 
 /// Editing state for one interactive surface.
@@ -166,6 +181,7 @@ impl EditorInteraction {
                 Grab::Center => None,
                 Grab::Width => Some(nearest(&handles[0..2], self.pointer)),
                 Grab::Height => Some(nearest(&handles[2..4], self.pointer)),
+                Grab::Rotate => Some(defect.rotation_handle(height)),
             };
         }
         self.view.hovered_handle(self.pointer, width, height)
@@ -204,7 +220,12 @@ impl EditorInteraction {
         self.pointer = uv;
         self.has_pointer = true;
 
-        let Grabbed { id, grab, offset } = self.grab?;
+        let Grabbed {
+            id,
+            grab,
+            offset,
+            turn,
+        } = self.grab?;
         let defect = self.view.defects.iter().find(|d| d.id == id)?;
         // Where the grabbed point belongs now. Working from the press anchor
         // rather than from the last position keeps the drag exact: the view
@@ -217,15 +238,32 @@ impl EditorInteraction {
                 id,
                 center: self.transform.surface_to_panel(at),
             },
-            Grab::Width => {
-                let radius = project(at - defect.center, defect.rotation, false);
-                EditorAction::SetRadiusX { id, radius }
-            }
-            Grab::Height => {
-                let radius = project(at - defect.center, defect.rotation, true);
-                EditorAction::SetRadiusY { id, radius }
-            }
+            Grab::Width => EditorAction::SetRadiusX {
+                id,
+                radius: defect.ellipse().radius_from(at - defect.center, false),
+            },
+            Grab::Height => EditorAction::SetRadiusY {
+                id,
+                radius: defect.ellipse().radius_from(at - defect.center, true),
+            },
+            // The pointer itself carries the angle, so this one works from
+            // where the pointer is rather than from the handle it took.
+            Grab::Rotate => EditorAction::SetRotation {
+                id,
+                rotation: self.panel_angle(uv - defect.center, defect.aspect) + turn,
+            },
         })
+    }
+
+    /// Direction of a surface offset as the stored profile would measure it:
+    /// an angle on the glass, in the panel's own frame.
+    fn panel_angle(&self, offset: Vec2, surface_aspect: f32) -> f32 {
+        let panel_aspect = if self.transform.swaps_axes() {
+            1.0 / surface_aspect
+        } else {
+            surface_aspect
+        };
+        angle_in_square(self.transform.direction_to_panel(offset), panel_aspect)
     }
 
     /// Work out how far a press landed from the thing it grabbed.
@@ -240,11 +278,19 @@ impl EditorInteraction {
             Grab::Center => defect.center,
             Grab::Width => nearest(&handles[0..2], uv),
             Grab::Height => nearest(&handles[2..4], uv),
+            Grab::Rotate => defect.rotation_handle(self.surface_size.1),
+        };
+        let turn = if grab == Grab::Rotate {
+            self.panel_angle(grabbed - defect.center, defect.aspect)
+                - self.panel_angle(uv - defect.center, defect.aspect)
+        } else {
+            0.0
         };
         Some(Grabbed {
             id,
             grab,
             offset: uv - grabbed,
+            turn,
         })
     }
 
@@ -264,6 +310,14 @@ impl EditorInteraction {
             EditorAction::AdjustFalloff {
                 id,
                 delta: notches * WHEEL_FALLOFF_STEP,
+            }
+        } else if self.modifiers.alt {
+            // Scrolling up turns the spot the way the pointer would, which on
+            // a mirrored screen is the other way round in the stored frame.
+            let handed = if self.transform.reflects() { -1.0 } else { 1.0 };
+            EditorAction::AdjustRotation {
+                id,
+                delta: notches * WHEEL_ROTATION_STEP * handed,
             }
         } else {
             EditorAction::ScaleRadius {
@@ -312,17 +366,6 @@ fn nearest(candidates: &[Vec2], uv: Vec2) -> Vec2 {
         .unwrap_or(uv)
 }
 
-/// Length of `delta` along one of the ellipse's own axes.
-fn project(delta: Vec2, rotation: f32, across: bool) -> f32 {
-    let (sin, cos) = rotation.sin_cos();
-    let value = if across {
-        -delta.x * sin + delta.y * cos
-    } else {
-        delta.x * cos + delta.y * sin
-    };
-    value.abs().max(1.0e-4)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +378,7 @@ mod tests {
             center,
             radius,
             rotation: 0.0,
+            aspect: 1.0,
             enabled: true,
         };
         (
@@ -475,6 +519,123 @@ mod tests {
         }
     }
 
+    /// A drag has to be measured on the glass: on a 2:1 screen, pulling the
+    /// width handle of a spot standing on end by 0.3 of the height must set a
+    /// radius that is the same number of pixels, not the same fraction.
+    #[test]
+    fn a_resize_is_measured_in_pixels_not_in_normalized_units() {
+        let (id, mut view) = view(Vec2::splat(0.5), Vec2::splat(0.1));
+        view.defects[0].rotation = std::f32::consts::FRAC_PI_2;
+        view.defects[0].aspect = 2.0;
+        let mut editor = EditorInteraction::new(Transform::Normal);
+        editor.set_view(view, Transform::Normal);
+        editor.set_surface_size(2000, 1000);
+
+        // The width axis points up now, so its handle is above the centre.
+        editor.press(Vec2::new(0.5, 0.7), Button::Primary);
+        match editor.motion(Vec2::new(0.5, 0.8)) {
+            Some(EditorAction::SetRadiusX { id: got, radius }) => {
+                assert_eq!(got, id);
+                // 0.3 of a 1000 px height is 300 px, which is 0.15 of a 2000
+                // px width.
+                assert!((radius - 0.15).abs() < 1e-5, "{radius}");
+            }
+            other => panic!("expected a width change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dragging_the_rotation_handle_turns_the_spot() {
+        let (id, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+        let handle = {
+            let (_, view) = view(Vec2::splat(0.5), Vec2::splat(0.1));
+            view.defects[0].rotation_handle(1000)
+        };
+        assert_eq!(editor.press(handle, Button::Primary), None);
+
+        // Straight up from the centre is a quarter turn counter-clockwise, and
+        // y grows downwards.
+        match editor.motion(Vec2::new(0.5, 0.2)) {
+            Some(EditorAction::SetRotation { id: got, rotation }) => {
+                assert_eq!(got, id);
+                assert!(
+                    (rotation + std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+                    "{rotation}"
+                );
+            }
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+    }
+
+    /// The handle is a square several pixels across, so a press rarely lands on
+    /// its exact centre. That must not jerk the spot round to meet the pointer.
+    #[test]
+    fn taking_the_rotation_handle_off_centre_does_not_snap_the_spot() {
+        let (_, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+        let handle = {
+            let (_, view) = view(Vec2::splat(0.5), Vec2::splat(0.1));
+            view.defects[0].rotation_handle(1000)
+        };
+        let beside = Vec2::new(handle.x, handle.y + 4.0 / 1000.0);
+        editor.press(beside, Button::Primary);
+
+        match editor.motion(beside) {
+            Some(EditorAction::SetRotation { rotation, .. }) => {
+                assert!(rotation.abs() < 1e-4, "the spot jumped to {rotation}");
+            }
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rotation_drag_comes_back_in_panel_coordinates() {
+        let (_, view) = view(Vec2::splat(0.5), Vec2::splat(0.1));
+        let handle = view.defects[0].rotation_handle(1000);
+        let mut editor = EditorInteraction::new(Transform::Rotate90);
+        editor.set_view(view, Transform::Rotate90);
+        editor.set_surface_size(1000, 1000);
+        editor.press(handle, Button::Primary);
+
+        match editor.motion(Vec2::new(0.5, 0.2)) {
+            Some(EditorAction::SetRotation { rotation, .. }) => {
+                // Under a quarter turn of the screen, dragging the handle to
+                // the top of the surface points the spot along the panel's x.
+                assert!(rotation.abs() < 1e-4, "{rotation}");
+            }
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alt_redirects_the_wheel_to_the_rotation() {
+        let (id, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
+        editor.set_modifiers(Modifiers {
+            alt: true,
+            ..Default::default()
+        });
+        match editor.wheel(2.0) {
+            Some(EditorAction::AdjustRotation { id: got, delta }) => {
+                assert_eq!(got, id);
+                assert!((delta - 4.0f32.to_radians()).abs() < 1e-5, "{delta}");
+            }
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+
+        // A mirrored screen turns the other way, so the pointer and the spot
+        // still agree.
+        let (_, view) = view(Vec2::splat(0.5), Vec2::splat(0.1));
+        let mut flipped = EditorInteraction::new(Transform::Flipped);
+        flipped.set_view(view, Transform::Flipped);
+        flipped.set_modifiers(Modifiers {
+            alt: true,
+            ..Default::default()
+        });
+        match flipped.wheel(2.0) {
+            Some(EditorAction::AdjustRotation { delta, .. }) => assert!(delta < 0.0, "{delta}"),
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+    }
+
     #[test]
     fn releasing_the_pointer_ends_the_drag() {
         let (_, mut editor) = editor(Vec2::splat(0.5), Vec2::splat(0.1));
@@ -555,6 +716,7 @@ mod tests {
             center: Vec2::new(0.8, 0.8),
             radius: Vec2::splat(0.05),
             rotation: 0.0,
+            aspect: 1.0,
             enabled: true,
         });
         view.selected = Some(first);

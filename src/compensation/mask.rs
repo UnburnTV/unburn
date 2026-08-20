@@ -225,11 +225,35 @@ pub fn generate(
     output_height: u32,
 ) -> Mask {
     let (width, height) = params.quality.resolution_for(output_width, output_height);
-    generate_at(defects, params, width, height)
+    build(
+        defects,
+        params,
+        width,
+        height,
+        aspect_of(output_width, output_height),
+    )
 }
 
 /// Build the alpha field at an explicit mask resolution.
+///
+/// The panel's aspect ratio is taken from that resolution, since a mask is
+/// always sampled over the whole output: rounding a reduced-quality grid can
+/// shift it by a fraction of a percent, which is far below anything a defect's
+/// shape is calibrated to.
 pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: u32) -> Mask {
+    build(defects, params, width, height, aspect_of(width, height))
+}
+
+/// Width over height, for the rotation of a defect's ellipse.
+fn aspect_of(width: u32, height: u32) -> f32 {
+    if height == 0 {
+        1.0
+    } else {
+        width as f32 / height as f32
+    }
+}
+
+fn build(defects: &[Defect], params: &MaskParams, width: u32, height: u32, aspect: f32) -> Mask {
     let width = width.max(1);
     let height = height.max(1);
     let count = (width as usize) * (height as usize);
@@ -240,7 +264,7 @@ pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: 
     }
 
     // First pass: the modelled panel response and its extremes.
-    let panel_gain = model_field(&active, width, height, true);
+    let panel_gain = model_field(&active, width, height, aspect, true);
     let (min_gain, max_gain) = extremes(&panel_gain);
 
     // Second pass: bring every pixel down to the per-channel target.
@@ -285,12 +309,18 @@ pub fn generate_at(defects: &[Defect], params: &MaskParams, width: u32, height: 
 /// Overlapping defects do not stack; the strongest at each point wins. Two
 /// shapes that overlap in a profile are normally describing one blemish between
 /// them, and multiplying their responses would count the same damage twice.
-fn model_field(defects: &[&Defect], width: u32, height: u32, use_bounds: bool) -> Vec<Rgb> {
+fn model_field(
+    defects: &[&Defect],
+    width: u32,
+    height: u32,
+    aspect: f32,
+    use_bounds: bool,
+) -> Vec<Rgb> {
     let mut gain = vec![Rgb::ONE; (width as usize) * (height as usize)];
 
     for defect in defects {
         let (x0, x1, y0, y1) = if use_bounds {
-            let (lo, hi) = defect.bounds();
+            let (lo, hi) = defect.bounds(aspect);
             // Only the rows and columns the defect can measurably reach.
             (
                 ((lo.x * width as f32).floor().max(0.0)) as u32,
@@ -308,7 +338,7 @@ fn model_field(defects: &[&Defect], width: u32, height: u32, use_bounds: bool) -
             for x in x0..x1 {
                 let u = (x as f32 + 0.5) / width as f32;
                 let slot = &mut gain[row + x as usize];
-                *slot = strongest(*slot, defect.gain_at(Vec2::new(u, v)));
+                *slot = strongest(*slot, defect.gain_at(Vec2::new(u, v), aspect));
             }
         }
     }
@@ -359,7 +389,7 @@ pub fn generate_model_field(defects: &[Defect], width: u32, height: u32) -> Mask
     let width = width.max(1);
     let height = height.max(1);
     let active: Vec<&Defect> = defects.iter().filter(|d| d.enabled()).collect();
-    let gain = model_field(&active, width, height, false);
+    let gain = model_field(&active, width, height, aspect_of(width, height), false);
     let (min_gain, max_gain) = extremes(&gain);
 
     let texels = gain
@@ -636,6 +666,39 @@ mod tests {
         params.compensation = 0.0;
         let off = generate_at(&[spot(Vec2::splat(0.5), 0.2)], &params, 65, 65);
         assert!(off.is_transparent());
+    }
+
+    /// The mask is the only thing the user ever sees, so this is where the
+    /// aspect-corrected rotation has to show up: turning a spot that is round
+    /// on the glass must leave every pixel of the correction where it was.
+    #[test]
+    fn turning_a_round_spot_does_not_change_the_correction() {
+        let params = MaskParams {
+            dither: false,
+            ..Default::default()
+        };
+        // On a 2:1 grid, 0.1 of the width and 0.2 of the height are the same
+        // distance.
+        let round = |rotation| {
+            Defect::Radial(RadialDefect {
+                center: Vec2::splat(0.5),
+                radius: Vec2::new(0.1, 0.2),
+                rotation,
+                strength: Rgb::splat(0.2),
+                ..Default::default()
+            })
+        };
+        let upright = generate_at(&[round(0.0)], &params, 64, 32);
+        for turn in [0.4, 1.0, std::f32::consts::FRAC_PI_2] {
+            let turned = generate_at(&[round(turn)], &params, 64, 32);
+            let worst = upright
+                .texels
+                .iter()
+                .zip(&turned.texels)
+                .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+                .fold(0.0f32, f32::max);
+            assert!(worst < 1.0 / 255.0, "turned by {turn}: worst error {worst}");
+        }
     }
 
     #[test]

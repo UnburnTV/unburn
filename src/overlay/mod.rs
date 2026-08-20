@@ -6,7 +6,7 @@ pub mod window;
 use uuid::Uuid;
 
 use crate::{
-    compensation::{Defect, Vec2},
+    compensation::{ellipse::to_square, Defect, Ellipse, Vec2},
     display::Transform,
 };
 
@@ -127,6 +127,35 @@ impl DiscSwatch {
     }
 }
 
+/// Express a panel-space ellipse in the coordinates of a rotated surface.
+///
+/// Turning a screen is a rigid motion of its pixels, so on the glass nothing
+/// happens to the shape at all. In normalized terms it is not so quiet: a
+/// transform that swaps the axes leaves the surface with the reciprocal of the
+/// panel's aspect ratio, so both radii and the angle have to be restated
+/// against it.
+pub fn ellipse_to_surface(ellipse: Ellipse, transform: Transform) -> Ellipse {
+    if transform == Transform::Normal {
+        return ellipse;
+    }
+    let aspect = if transform.swaps_axes() {
+        1.0 / ellipse.aspect
+    } else {
+        ellipse.aspect
+    };
+    let (along, across) = ellipse.axes();
+    // In square space the transform is a turn (possibly a reflection), so the
+    // axes keep their lengths and the first of them still gives the angle.
+    let along = to_square(transform.direction_to_surface(along), aspect);
+    let across = to_square(transform.direction_to_surface(across), aspect);
+    Ellipse::new(
+        transform.panel_to_surface(ellipse.center),
+        Vec2::new(along.length() / aspect, across.length()),
+        along.y.atan2(along.x),
+        aspect,
+    )
+}
+
 /// A defect as the on-screen editor sees it: already mapped into the
 /// surface's own coordinate space.
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +164,9 @@ pub struct EditorDefect {
     pub center: Vec2,
     pub radius: Vec2,
     pub rotation: f32,
+    /// Width over height of the surface, so that [`Self::rotation`] means the
+    /// same turn on the glass here as it does in the stored profile.
+    pub aspect: f32,
     pub enabled: bool,
 }
 
@@ -144,42 +176,60 @@ impl EditorDefect {
     /// that is drawn.
     pub const HANDLE_HALF_PX: i32 = 5;
 
+    /// Gap between a spot's contour and its rotation handle, in overlay
+    /// pixels. Constant on screen, so the handle is reachable on a spot of any
+    /// size instead of sitting inside the outline of a small one.
+    pub const ROTATION_ARM_PX: f32 = 22.0;
+
     /// Project a stored defect into the coordinates of a possibly rotated
-    /// surface.
-    pub fn from_defect(defect: &Defect, transform: Transform) -> Option<EditorDefect> {
+    /// surface. `panel_aspect` is the panel's width over its height, unrotated.
+    pub fn from_defect(
+        defect: &Defect,
+        transform: Transform,
+        panel_aspect: f32,
+    ) -> Option<EditorDefect> {
         let radial = defect.as_radial()?;
-        let axis = Vec2::new(radial.rotation.cos(), radial.rotation.sin());
-        let mapped = transform.direction_to_surface(axis);
+        let shape = ellipse_to_surface(radial.ellipse(panel_aspect), transform);
         Some(EditorDefect {
             id: radial.id,
-            center: transform.panel_to_surface(radial.center),
-            radius: radial.radius,
-            rotation: mapped.y.atan2(mapped.x),
+            center: shape.center,
+            radius: shape.radius,
+            rotation: shape.rotation,
+            aspect: shape.aspect,
             enabled: radial.enabled,
         })
+    }
+
+    /// The shape this defect draws on the surface.
+    pub fn ellipse(&self) -> Ellipse {
+        Ellipse::new(self.center, self.radius, self.rotation, self.aspect)
     }
 
     /// Normalized elliptical distance of `uv` from the centre, `1.0` on the
     /// nominal contour.
     pub fn distance(&self, uv: Vec2) -> f32 {
-        let d = uv - self.center;
-        let (sin, cos) = self.rotation.sin_cos();
-        let x = (d.x * cos + d.y * sin) / self.radius.x.max(1e-4);
-        let y = (-d.x * sin + d.y * cos) / self.radius.y.max(1e-4);
-        (x * x + y * y).sqrt()
+        self.ellipse().distance(uv)
     }
 
     /// Positions of the width and height drag handles, in surface coordinates.
     pub fn handles(&self) -> [Vec2; 4] {
-        let (sin, cos) = self.rotation.sin_cos();
-        let along = Vec2::new(cos * self.radius.x, sin * self.radius.x);
-        let across = Vec2::new(-sin * self.radius.y, cos * self.radius.y);
+        let (along, across) = self.ellipse().axes();
         [
             self.center + along,
             self.center - along,
             self.center + across,
             self.center - across,
         ]
+    }
+
+    /// Where the rotation handle sits: on the width axis, a fixed distance
+    /// beyond the contour. `height` is the surface's height in pixels, which is
+    /// what one unit of the isotropic space measures.
+    pub fn rotation_handle(&self, height: u32) -> Vec2 {
+        let (along, _) = self.ellipse().axes();
+        let arm = to_square(along, self.aspect).length();
+        let reach = Self::ROTATION_ARM_PX / height.max(1) as f32;
+        self.center + along * ((arm + reach) / arm.max(1e-6))
     }
 }
 
@@ -197,6 +247,7 @@ pub enum Grab {
     Center,
     Width,
     Height,
+    Rotate,
 }
 
 /// The editor's view of one surface.
@@ -225,6 +276,11 @@ impl EditorView {
 
         for defect in ordered {
             if self.selected == Some(defect.id) {
+                // The rotation handle is outside the contour, so it is tested
+                // first: a press there is never meant for the body.
+                if handle_contains(defect.rotation_handle(height), uv, width, height) {
+                    return Some((defect.id, Grab::Rotate));
+                }
                 for (index, handle) in defect.handles().iter().enumerate() {
                     if handle_contains(*handle, uv, width, height) {
                         let grab = if index < 2 { Grab::Width } else { Grab::Height };
@@ -245,6 +301,7 @@ impl EditorView {
         defect
             .handles()
             .into_iter()
+            .chain([defect.rotation_handle(height)])
             .find(|handle| handle_contains(*handle, uv, width, height))
     }
 }
@@ -383,6 +440,7 @@ mod tests {
             center,
             radius,
             rotation: 0.0,
+            aspect: 1.0,
             enabled: true,
         }
     }
@@ -508,17 +566,82 @@ mod tests {
 
     #[test]
     fn editor_defects_follow_a_rotated_output() {
+        let aspect = 16.0 / 9.0;
         let defect = Defect::Radial(RadialDefect {
             center: Vec2::new(0.25, 0.5),
             radius: Vec2::new(0.1, 0.05),
             rotation: 0.0,
             ..Default::default()
         });
-        let view = EditorDefect::from_defect(&defect, Transform::Rotate90).unwrap();
+        let view = EditorDefect::from_defect(&defect, Transform::Rotate90, aspect).unwrap();
         // The panel's left edge becomes the surface's bottom edge.
         assert!((view.center.x - 0.5).abs() < 1e-5);
         assert!((view.center.y - 0.75).abs() < 1e-5);
         // The long axis turns with it.
         assert!((view.rotation.abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        // The surface is as tall as the panel is wide.
+        assert!((view.aspect - 9.0 / 16.0).abs() < 1e-5);
+    }
+
+    /// A turn of the screen must not change how big the spot is on the glass,
+    /// only which way round the numbers describing it are.
+    #[test]
+    fn a_rotated_output_keeps_a_spot_the_same_size_in_pixels() {
+        let (panel_w, panel_h) = (1920.0f32, 1080.0f32);
+        let defect = Defect::Radial(RadialDefect {
+            center: Vec2::new(0.25, 0.5),
+            radius: Vec2::new(0.1, 0.05),
+            rotation: 0.0,
+            ..Default::default()
+        });
+        let view =
+            EditorDefect::from_defect(&defect, Transform::Rotate90, panel_w / panel_h).unwrap();
+        // The surface is the panel stood on its side.
+        let (surface_w, surface_h) = (panel_h, panel_w);
+        let (along, across) = view.ellipse().axes();
+        let pixels = |v: Vec2| Vec2::new(v.x * surface_w, v.y * surface_h);
+        let (along, across) = (pixels(along), pixels(across));
+
+        // The 192 px axis now runs up the surface and the 54 px one across it,
+        // both still the length they were on the panel.
+        assert!(along.x.abs() < 0.5, "{along:?}");
+        assert!((along.y.abs() - 0.1 * panel_w).abs() < 0.5, "{along:?}");
+        assert!(across.y.abs() < 0.5, "{across:?}");
+        assert!((across.x.abs() - 0.05 * panel_h).abs() < 0.5, "{across:?}");
+    }
+
+    #[test]
+    fn the_rotation_handle_sits_a_fixed_reach_beyond_the_contour() {
+        let mut spot = defect(Vec2::splat(0.5), Vec2::splat(0.1));
+        spot.aspect = 1.0;
+        let handle = spot.rotation_handle(1000);
+        // 0.1 of a 1000 px surface plus the arm.
+        let expected = 0.5 + (100.0 + EditorDefect::ROTATION_ARM_PX) / 1000.0;
+        assert!((handle.x - expected).abs() < 1e-5, "{handle:?}");
+        assert!((handle.y - 0.5).abs() < 1e-6);
+
+        // A tiny spot still gets a reachable handle.
+        let small = defect(Vec2::splat(0.5), Vec2::splat(0.002));
+        let handle = small.rotation_handle(1000);
+        assert!(handle.x - small.center.x > 0.02, "{handle:?}");
+    }
+
+    #[test]
+    fn the_rotation_handle_can_be_grabbed_and_the_body_cannot_steal_it() {
+        let spot = defect(Vec2::splat(0.5), Vec2::splat(0.1));
+        let id = spot.id;
+        let handle = spot.rotation_handle(1000);
+        let view = EditorView {
+            defects: vec![spot],
+            selected: Some(id),
+            ..Default::default()
+        };
+        assert_eq!(view.hit_test(handle, 1000, 1000), Some((id, Grab::Rotate)));
+        assert_eq!(view.hovered_handle(handle, 1000, 1000), Some(handle));
+        // Still the width handle where the width handle is.
+        assert_eq!(
+            view.hit_test(Vec2::new(0.6, 0.5), 1000, 1000),
+            Some((id, Grab::Width))
+        );
     }
 }

@@ -181,6 +181,13 @@ impl Transform {
         )
     }
 
+    /// Whether the transform mirrors the panel, so that a turn one way on the
+    /// surface is a turn the other way in panel coordinates.
+    pub fn reflects(self) -> bool {
+        let m = self.linear();
+        m[0][0] * m[1][1] - m[0][1] * m[1][0] < 0.0
+    }
+
     /// The linear part of panel-space → surface-space, as `[[a, b], [c, d]]`
     /// acting on normalized offsets.
     fn linear(self) -> [[f32; 2]; 2] {
@@ -210,6 +217,14 @@ impl Transform {
     pub fn direction_to_surface(self, d: Vec2) -> Vec2 {
         let m = self.linear();
         Vec2::new(m[0][0] * d.x + m[0][1] * d.y, m[1][0] * d.x + m[1][1] * d.y)
+    }
+
+    /// Map a normalized offset back onto the panel.
+    pub fn direction_to_panel(self, d: Vec2) -> Vec2 {
+        // Signed permutation matrices are orthogonal: the inverse is the
+        // transpose, as in `surface_to_panel`.
+        let m = self.linear();
+        Vec2::new(m[0][0] * d.x + m[1][0] * d.y, m[0][1] * d.x + m[1][1] * d.y)
     }
 
     /// Map a normalized surface coordinate back onto the panel.

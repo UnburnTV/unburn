@@ -396,10 +396,11 @@ impl Reconciler {
             let stale_model = show.draws_model() && live.model.as_ref() != Some(&key);
 
             if stale_mask || stale_model {
+                let panel_aspect = output.panel_aspect();
                 let surface_defects: Vec<Defect> = settings
                     .defects
                     .iter()
-                    .map(|d| crate::overlay::transform_defect(d, output.transform))
+                    .map(|d| crate::overlay::transform_defect(d, output.transform, panel_aspect))
                     .collect();
 
                 if stale_mask {
@@ -438,7 +439,9 @@ impl Reconciler {
                     defects: settings
                         .defects
                         .iter()
-                        .filter_map(|d| EditorDefect::from_defect(d, output.transform))
+                        .filter_map(|d| {
+                            EditorDefect::from_defect(d, output.transform, output.panel_aspect())
+                        })
                         .collect(),
                     selected: editing.selected,
                     show: editing.show,
@@ -449,7 +452,9 @@ impl Reconciler {
                     .defects
                     .iter()
                     .find(|d| d.id() == id)
-                    .and_then(|d| EditorDefect::from_defect(d, output.transform))
+                    .and_then(|d| {
+                        EditorDefect::from_defect(d, output.transform, output.panel_aspect())
+                    })
                     .map(|defect| CalibrationDisc {
                         defect,
                         colors: self.desired.disc_colors.clone(),
@@ -468,7 +473,9 @@ impl Reconciler {
                     .defects
                     .iter()
                     .find(|d| d.id() == id)
-                    .and_then(|d| EditorDefect::from_defect(d, output.transform))
+                    .and_then(|d| {
+                        EditorDefect::from_defect(d, output.transform, output.panel_aspect())
+                    })
                     .map(|defect| defect.center)
             });
             backend.set_hover(overlay, hover);

@@ -309,7 +309,16 @@ impl CpuMaskRenderer {
                 let hover_px = self
                     .handle_hover
                     .map(|h| overlay_pixel(h, self.width, self.height));
-                for handle in defect.handles() {
+                let rotation = defect.rotation_handle(self.height);
+                // An arm out to the rotation handle, so it reads as part of the
+                // spot rather than as a stray marker beside it.
+                self.draw_line(
+                    overlay_pixel(defect.handles()[0], self.width, self.height),
+                    overlay_pixel(rotation, self.width, self.height),
+                    colour,
+                    1,
+                );
+                for handle in defect.handles().into_iter().chain([rotation]) {
                     let hovered = hover_px == Some(overlay_pixel(handle, self.width, self.height));
                     let fill = if hovered { Rgba::HANDLE_HOVER } else { colour };
                     self.fill_square(handle, EditorDefect::HANDLE_HALF_PX, fill);
@@ -327,27 +336,18 @@ impl CpuMaskRenderer {
         colour: Rgba,
         thickness: i32,
     ) {
-        let (sin, cos) = defect.rotation.sin_cos();
-        let rx = defect.radius.x * scale * self.width as f32;
-        let ry = defect.radius.y * scale * self.height as f32;
-        let cx = defect.center.x * self.width as f32;
-        let cy = defect.center.y * self.height as f32;
+        let shape = defect.ellipse();
+        let rx = defect.radius.x.abs() * scale * self.width as f32;
+        let ry = defect.radius.y.abs() * scale * self.height as f32;
 
         // One sample per pixel of perimeter keeps the contour unbroken.
-        let perimeter = std::f32::consts::PI * 2.0 * rx.abs().max(ry.abs());
+        let perimeter = std::f32::consts::TAU * rx.max(ry);
         let steps = (perimeter.ceil() as i32).clamp(64, 8192);
 
         let mut previous: Option<(i32, i32)> = None;
         for i in 0..=steps {
             let t = (i as f32 / steps as f32) * std::f32::consts::TAU;
-            // Rotation happens in pixel space so the ellipse is not sheared by
-            // a non-square aspect ratio.
-            let (st, ct) = t.sin_cos();
-            let ux = ct * defect.radius.x * scale;
-            let uy = st * defect.radius.y * scale;
-            let x = cx + (ux * cos - uy * sin) * self.width as f32;
-            let y = cy + (ux * sin + uy * cos) * self.height as f32;
-            let point = (x.round() as i32, y.round() as i32);
+            let point = overlay_pixel(shape.contour(t, scale), self.width, self.height);
             if let Some(previous) = previous {
                 self.draw_line(previous, point, colour, thickness);
             }
@@ -355,7 +355,7 @@ impl CpuMaskRenderer {
         }
     }
 
-    fn fill_square(&mut self, center: crate::compensation::Vec2, half: i32, colour: Rgba) {
+    fn fill_square(&mut self, center: Vec2, half: i32, colour: Rgba) {
         let (cx, cy) = overlay_pixel(center, self.width, self.height);
         for y in (cy - half)..=(cy + half) {
             for x in (cx - half)..=(cx + half) {
@@ -702,6 +702,7 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(0.1),
                 rotation: 0.0,
+                aspect: 1.0,
                 enabled: true,
             }],
             selected: Some(id),
@@ -777,6 +778,7 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(0.1),
                 rotation: 0.0,
+                aspect: 1.0,
                 enabled: true,
             }],
             selected: Some(id),
@@ -816,6 +818,7 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(spot_radius),
                 rotation: 0.0,
+                aspect: 1.0,
                 enabled,
             },
             colors,
@@ -967,6 +970,7 @@ mod tests {
                 center: Vec2::splat(0.5),
                 radius: Vec2::splat(0.1),
                 rotation: 0.0,
+                aspect: 1.0,
                 enabled: true,
             }],
             selected: Some(id),

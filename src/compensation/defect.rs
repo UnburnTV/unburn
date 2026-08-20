@@ -6,14 +6,18 @@ use uuid::Uuid;
 use super::{radial::RadialDefect, Rgb, Vec2};
 
 /// Anything that can describe a region where the panel is off-brightness.
+/// `aspect` is the width divided by the height of the panel being sampled.
+/// Normalized coordinates are not isotropic, so a defect cannot say what it
+/// looks like without being told the shape of the panel it sits on; see
+/// [`super::ellipse`].
 pub trait DefectModel {
     /// Relative brightness the panel delivers at `uv` per channel, where `1.0`
     /// is a healthy pixel. Above `1.0` is a spot that emits too much light.
-    fn gain_at(&self, uv: Vec2) -> Rgb;
+    fn gain_at(&self, uv: Vec2, aspect: f32) -> Rgb;
 
     /// Normalized axis-aligned box outside of which `gain_at` is
     /// indistinguishable from `1.0`. Used to skip work during mask generation.
-    fn bounds(&self) -> (Vec2, Vec2);
+    fn bounds(&self, aspect: f32) -> (Vec2, Vec2);
 }
 
 /// A single modelled panel defect.
@@ -106,15 +110,15 @@ impl Defect {
 }
 
 impl DefectModel for Defect {
-    fn gain_at(&self, uv: Vec2) -> Rgb {
+    fn gain_at(&self, uv: Vec2, aspect: f32) -> Rgb {
         match self {
-            Defect::Radial(d) => d.gain_at(uv),
+            Defect::Radial(d) => d.gain_at(uv, aspect),
         }
     }
 
-    fn bounds(&self) -> (Vec2, Vec2) {
+    fn bounds(&self, aspect: f32) -> (Vec2, Vec2) {
         match self {
-            Defect::Radial(d) => d.bounds(),
+            Defect::Radial(d) => d.bounds(aspect),
         }
     }
 }

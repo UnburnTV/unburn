@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{defect::DefectModel, Rgb, Vec2};
+use super::{defect::DefectModel, ellipse::Ellipse, Rgb, Vec2};
 
 /// Smallest radius we allow, to keep `gain_at` free of divisions by zero.
 pub const MIN_RADIUS: f32 = 1.0e-4;
@@ -41,7 +41,10 @@ pub struct RadialDefect {
 
     pub center: Vec2,
     pub radius: Vec2,
-    /// Rotation of the ellipse in radians, counter-clockwise.
+    /// Rotation of the ellipse in radians, counter-clockwise, measured on the
+    /// glass rather than in these normalized coordinates. See
+    /// [`super::ellipse`]: turning the radii themselves would shear the spot
+    /// on any panel that is not square.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f32,
 
@@ -125,29 +128,30 @@ impl RadialDefect {
         self.radius.y = (self.radius.y * factor).clamp(MIN_RADIUS, 4.0);
     }
 
-    /// Coordinates of `uv` in the defect's own rotated, radius-normalized frame.
-    fn local(&self, uv: Vec2) -> Vec2 {
-        let d = uv - self.center;
-        let (sin, cos) = self.rotation.sin_cos();
-        // Rotate by -rotation to undo the ellipse's own rotation.
-        let x = d.x * cos + d.y * sin;
-        let y = -d.x * sin + d.y * cos;
-        Vec2::new(
-            x / self.radius.x.max(MIN_RADIUS),
-            y / self.radius.y.max(MIN_RADIUS),
+    /// The shape this defect describes on a panel of the given aspect ratio
+    /// (width / height).
+    ///
+    /// The aspect ratio is not stored: the same profile has to mean the same
+    /// blemish at every resolution the panel can run, so it is supplied by
+    /// whoever is sampling the defect and knows what it is being drawn on.
+    pub fn ellipse(&self, aspect: f32) -> Ellipse {
+        Ellipse::new(
+            self.center,
+            Vec2::new(self.radius.x.max(MIN_RADIUS), self.radius.y.max(MIN_RADIUS)),
+            self.rotation,
+            aspect,
         )
     }
 
     /// Normalized elliptical distance: `1.0` on the nominal radius contour.
-    pub fn normalized_distance(&self, uv: Vec2) -> f32 {
-        self.local(uv).length()
+    pub fn normalized_distance(&self, uv: Vec2, aspect: f32) -> f32 {
+        self.ellipse(aspect).distance(uv)
     }
 
     /// The unit Gaussian profile `d_i(x, y)` from the specification: `1.0` at
     /// the centre, falling to zero far away.
-    pub fn profile_at(&self, uv: Vec2) -> f32 {
-        let l = self.local(uv);
-        let r2 = l.x * l.x + l.y * l.y;
+    pub fn profile_at(&self, uv: Vec2, aspect: f32) -> f32 {
+        let r2 = self.normalized_distance(uv, aspect).powi(2);
         if r2 <= 0.0 {
             return 1.0;
         }
@@ -160,30 +164,20 @@ impl RadialDefect {
     }
 
     /// How much brighter than a healthy pixel this defect makes `uv`.
-    pub fn excess_at(&self, uv: Vec2) -> Rgb {
-        self.strength * self.profile_at(uv)
+    pub fn excess_at(&self, uv: Vec2, aspect: f32) -> Rgb {
+        self.strength * self.profile_at(uv, aspect)
     }
 }
 
 impl DefectModel for RadialDefect {
-    fn gain_at(&self, uv: Vec2) -> Rgb {
-        (Rgb::ONE + self.excess_at(uv)).map(|g| g.max(0.0))
+    fn gain_at(&self, uv: Vec2, aspect: f32) -> Rgb {
+        (Rgb::ONE + self.excess_at(uv, aspect)).map(|g| g.max(0.0))
     }
 
     /// Beyond roughly four sigma the Gaussian contributes less than 0.04 % of
     /// its peak, which is far below the 8-bit quantum of the final alpha.
-    fn bounds(&self) -> (Vec2, Vec2) {
-        let extent = 4.0 / self.falloff.max(0.2);
-        let rx = self.radius.x.abs() * extent;
-        let ry = self.radius.y.abs() * extent;
-        // Axis-aligned bound of the rotated ellipse's own bounding box.
-        let (sin, cos) = self.rotation.sin_cos();
-        let hx = (rx * cos).abs() + (ry * sin).abs();
-        let hy = (rx * sin).abs() + (ry * cos).abs();
-        (
-            Vec2::new(self.center.x - hx, self.center.y - hy),
-            Vec2::new(self.center.x + hx, self.center.y + hy),
-        )
+    fn bounds(&self, aspect: f32) -> (Vec2, Vec2) {
+        self.ellipse(aspect).bounds(4.0 / self.falloff.max(0.2))
     }
 }
 
@@ -191,6 +185,10 @@ impl DefectModel for RadialDefect {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// A square panel, where normalized coordinates are already isotropic and
+    /// the sigma of the Gaussian can be read straight off the radii.
+    const SQUARE: f32 = 1.0;
 
     fn unit_spot(strength: Rgb) -> RadialDefect {
         RadialDefect {
@@ -204,15 +202,15 @@ mod tests {
     #[test]
     fn radial_profiles_scale_channels_and_support_dim_patches() {
         let tinted = unit_spot(Rgb::new(0.2, 0.1, 0.0));
-        let peak = tinted.excess_at(tinted.center);
+        let peak = tinted.excess_at(tinted.center, SQUARE);
         assert_eq!(peak, Rgb::new(0.2, 0.1, 0.0));
-        let off = tinted.excess_at(Vec2::new(0.6, 0.5));
+        let off = tinted.excess_at(Vec2::new(0.6, 0.5), SQUARE);
         assert_relative_eq!(off.r / peak.r, (-0.5f32).exp(), epsilon = 1e-6);
         assert_relative_eq!(off.g / peak.g, (-0.5f32).exp(), epsilon = 1e-6);
 
         let dim = unit_spot(Rgb::splat(-0.12));
-        assert_relative_eq!(dim.gain_at(dim.center).r, 0.88, epsilon = 1e-6);
-        assert_relative_eq!(dim.gain_at(Vec2::ZERO).r, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(dim.gain_at(dim.center, SQUARE).r, 0.88, epsilon = 1e-6);
+        assert_relative_eq!(dim.gain_at(Vec2::ZERO, SQUARE).r, 1.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -220,13 +218,13 @@ mod tests {
         let d = unit_spot(Rgb::ONE);
         // One sigma away: exp(-0.5).
         assert_relative_eq!(
-            d.profile_at(Vec2::new(0.6, 0.5)),
+            d.profile_at(Vec2::new(0.6, 0.5), SQUARE),
             (-0.5f32).exp(),
             epsilon = 1e-6
         );
         // Two sigma away: exp(-2).
         assert_relative_eq!(
-            d.profile_at(Vec2::new(0.7, 0.5)),
+            d.profile_at(Vec2::new(0.7, 0.5), SQUARE),
             (-2.0f32).exp(),
             epsilon = 1e-6
         );
@@ -238,8 +236,8 @@ mod tests {
             radius: Vec2::new(0.2, 0.05),
             ..unit_spot(Rgb::ONE)
         };
-        let along_x = d.profile_at(Vec2::new(0.7, 0.5));
-        let along_y = d.profile_at(Vec2::new(0.5, 0.55));
+        let along_x = d.profile_at(Vec2::new(0.7, 0.5), SQUARE);
+        let along_y = d.profile_at(Vec2::new(0.5, 0.55), SQUARE);
         assert_relative_eq!(along_x, along_y, epsilon = 1e-6);
     }
 
@@ -252,7 +250,42 @@ mod tests {
         };
         // With a quarter turn the long axis now points along y.
         assert_relative_eq!(
-            d.profile_at(Vec2::new(0.5, 0.7)),
+            d.profile_at(Vec2::new(0.5, 0.7), SQUARE),
+            (-0.5f32).exp(),
+            epsilon = 1e-5
+        );
+    }
+
+    /// A defect shaped to look round on the panel it was calibrated on must
+    /// stay round however it is turned, and a turn on a wide panel must reach
+    /// the same points a turn on a square one does.
+    #[test]
+    fn a_turn_is_measured_on_the_glass() {
+        let aspect = 16.0 / 9.0;
+        let round = RadialDefect {
+            radius: Vec2::new(0.1, 0.1 * aspect),
+            rotation: 0.9,
+            ..unit_spot(Rgb::ONE)
+        };
+        // One sigma away along the glass in any direction: 0.1 of a width to
+        // the side, or the same physical distance, 0.1 * aspect, upwards.
+        for probe in [Vec2::new(0.6, 0.5), Vec2::new(0.5, 0.5 + 0.1 * aspect)] {
+            assert_relative_eq!(
+                round.profile_at(probe, aspect),
+                (-0.5f32).exp(),
+                epsilon = 1e-5
+            );
+        }
+
+        // A quarter turn of a long spot puts its far end straight up, one
+        // physical sigma away rather than one normalized unit.
+        let long = RadialDefect {
+            radius: Vec2::new(0.2, 0.05),
+            rotation: std::f32::consts::FRAC_PI_2,
+            ..unit_spot(Rgb::ONE)
+        };
+        assert_relative_eq!(
+            long.profile_at(Vec2::new(0.5, 0.5 + 0.2 * aspect), aspect),
             (-0.5f32).exp(),
             epsilon = 1e-5
         );
@@ -264,7 +297,7 @@ mod tests {
             strength: Rgb::splat(-5.0),
             ..Default::default()
         };
-        assert_eq!(d.gain_at(d.center).r, 0.0);
+        assert_eq!(d.gain_at(d.center, SQUARE).r, 0.0);
     }
 
     #[test]
@@ -273,9 +306,32 @@ mod tests {
             radius: Vec2::new(0.1, 0.05),
             ..unit_spot(Rgb::ONE)
         };
-        let (min, max) = d.bounds();
-        assert!(d.profile_at(Vec2::new(min.x, 0.5)) < 1e-3);
-        assert!(d.profile_at(Vec2::new(max.x, 0.5)) < 1e-3);
+        let (min, max) = d.bounds(SQUARE);
+        assert!(d.profile_at(Vec2::new(min.x, 0.5), SQUARE) < 1e-3);
+        assert!(d.profile_at(Vec2::new(max.x, 0.5), SQUARE) < 1e-3);
         assert!(min.x < 0.5 && max.x > 0.5);
+    }
+
+    #[test]
+    fn bounds_hold_a_rotated_spot_on_a_wide_panel() {
+        let aspect = 16.0 / 9.0;
+        let d = RadialDefect {
+            radius: Vec2::new(0.15, 0.04),
+            rotation: 0.7,
+            ..unit_spot(Rgb::ONE)
+        };
+        let (min, max) = d.bounds(aspect);
+        for i in 0..256 {
+            let t = i as f32 / 256.0 * std::f32::consts::TAU;
+            let p = d.ellipse(aspect).contour(t, 1.0);
+            assert!(
+                p.x >= min.x && p.x <= max.x,
+                "{p:?} outside {min:?}..{max:?}"
+            );
+            assert!(
+                p.y >= min.y && p.y <= max.y,
+                "{p:?} outside {min:?}..{max:?}"
+            );
+        }
     }
 }

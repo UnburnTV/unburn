@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     cli::{Args, BackendChoice},
-    compensation::{Defect, RadialDefect, Vec2},
+    compensation::{self, Defect, RadialDefect, Vec2},
     config::{self, Config, DisplayConfig},
     display::{DisplayIdentity, OutputInfo},
     ipc,
@@ -450,6 +450,10 @@ impl App {
             radial.center = clamp_unit(radial.center);
             radial.radius.x = radial.radius.x.clamp(MIN_RADIUS, MAX_RADIUS);
             radial.radius.y = radial.radius.y.clamp(MIN_RADIUS, MAX_RADIUS);
+            // Folded rather than clamped: a turn past the end of the range is
+            // still a turn, and the slider has to be able to show where a drag
+            // on screen left the spot.
+            radial.rotation = compensation::normalize_rotation(radial.rotation);
             radial.strength = radial
                 .strength
                 .map(|s| s.clamp(-MAX_STRENGTH, MAX_STRENGTH));
@@ -610,6 +614,12 @@ impl App {
             }
             EditorAction::SetRadiusY { id, radius } => {
                 self.edit_defect(id, |d| d.radius.y = radius)
+            }
+            EditorAction::SetRotation { id, rotation } => {
+                self.edit_defect(id, |d| d.rotation = rotation)
+            }
+            EditorAction::AdjustRotation { id, delta } => {
+                self.edit_defect(id, |d| d.rotation += delta)
             }
             EditorAction::ScaleRadius { id, factor } => {
                 self.edit_defect(id, |d| d.scale_radius(factor))
