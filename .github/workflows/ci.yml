@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - test-release
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
@@ -55,9 +57,17 @@ jobs:
 
   package:
     name: Build Ubuntu package
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/test-release'
     needs: ci
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout repository
@@ -83,7 +93,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build Debian package
-        run: ./scripts/build-deb.sh "${{ github.ref_name }}"
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            release_ref="$GITHUB_REF_NAME"
+          else
+            version=$(cargo metadata --locked --no-deps --format-version 1 |
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+            release_ref="v$version"
+          fi
+          ./scripts/build-deb.sh "$release_ref"
 
       - name: Install and verify Debian package
         run: |
@@ -96,6 +115,6 @@ jobs:
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
         with:
-          name: unburn-${{ github.ref_name }}-${{ runner.arch }}
+          name: unburn-${{ github.ref_name }}-${{ matrix.architecture }}
           path: dist/*.deb
           if-no-files-found: error

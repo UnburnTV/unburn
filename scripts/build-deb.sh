@@ -21,7 +21,7 @@ for command_name in cargo dpkg dpkg-deb python3; do
     fi
 done
 
-metadata=$(cargo +nightly metadata --locked --no-deps --format-version 1)
+metadata=$(cargo metadata --locked --no-deps --format-version 1)
 manifest_version=$(printf '%s' "$metadata" | python3 -c '
 import json
 import sys
@@ -44,7 +44,7 @@ package_root=$(mktemp -d)
 trap 'rm -rf "$package_root"' EXIT HUP INT TERM
 
 echo "Building unburn $version for $architecture"
-cargo +nightly build --locked --release --bin unburn
+cargo build --locked --release --bin unburn
 
 install -Dm755 "$target_dir/release/unburn" "$package_root/usr/bin/unburn"
 install -Dm644 packaging/unburn.desktop \
