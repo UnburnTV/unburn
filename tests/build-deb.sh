@@ -29,6 +29,16 @@ if LC_ALL=C tr -d '\000-\177' <"$log_file" |
     echo "build-deb test: emitted non-ASCII output for a malformed tag" >&2
     exit 1
 fi
+multiline_tag=$(printf 'v%s\nnon-ascii-é' "$version")
+if ./scripts/build-deb.sh "$multiline_tag" >"$log_file" 2>&1; then
+    echo "build-deb test: accepted a multiline tag" >&2
+    exit 1
+fi
+if LC_ALL=C tr -d '\000-\177' <"$log_file" |
+    awk 'length { found = 1 } END { exit !found }'; then
+    echo "build-deb test: emitted non-ASCII output for a multiline tag" >&2
+    exit 1
+fi
 if ./scripts/build-deb.sh v999.999.999 >"$log_file" 2>&1; then
     echo "build-deb test: accepted a version that differs from Cargo.toml" >&2
     exit 1
@@ -100,8 +110,10 @@ assert_workflow_contains 'runner: ubuntu-24.04-arm'
 assert_workflow_contains 'architecture: arm64'
 assert_workflow_contains 'runs-on: ${{ matrix.runner }}'
 assert_workflow_contains './scripts/build-deb.sh "$release_ref"'
+assert_workflow_contains 'run: tests/build-deb.sh'
 assert_workflow_contains 'sudo apt-get install -y ./dist/*.deb'
 assert_workflow_contains 'installed_version=$(unburn --version)'
+assert_workflow_contains 'expected_version="unburn $(dpkg-deb --field "$package" Version)"'
 assert_workflow_contains 'uses: actions/upload-artifact@v4'
 assert_workflow_not_contains 'softprops/action-gh-release'
 assert_workflow_not_contains 'gh release'
