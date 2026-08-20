@@ -449,7 +449,7 @@ fn disc_color_pickers(ui: &mut egui::Ui, app: &mut App) {
     ui.label("Preview Disc Colors");
     let mut flags = [false; DiscSwatch::ALL.len()];
     for (i, swatch) in DiscSwatch::ALL.iter().enumerate() {
-        flags[i] = app.disc_colors().iter().any(|c| *c == swatch.rgb);
+        flags[i] = app.disc_colors().contains(&swatch.rgb);
     }
 
     let mut changed = false;
@@ -458,12 +458,12 @@ fn disc_color_pickers(ui: &mut egui::Ui, app: &mut App) {
         .spacing([12.0, 6.0])
         .min_col_width(0.0)
         .show(ui, |ui| {
-            for i in 0..6 {
-                changed |= colored_checkbox(ui, &mut flags[i], DiscSwatch::ALL[i]).changed();
+            for (flag, swatch) in flags[..6].iter_mut().zip(&DiscSwatch::ALL[..6]) {
+                changed |= colored_checkbox(ui, flag, *swatch).changed();
             }
             ui.end_row();
-            for i in 6..DiscSwatch::ALL.len() {
-                changed |= colored_checkbox(ui, &mut flags[i], DiscSwatch::ALL[i]).changed();
+            for (flag, swatch) in flags[6..].iter_mut().zip(&DiscSwatch::ALL[6..]) {
+                changed |= colored_checkbox(ui, flag, *swatch).changed();
             }
             ui.end_row();
         });

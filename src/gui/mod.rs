@@ -65,8 +65,7 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
         "unburn",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx
-                .all_styles_mut(|style| main_window::apply_ui_scale(style));
+            cc.egui_ctx.all_styles_mut(main_window::apply_ui_scale);
 
             // Anything the backend or the control socket reports arrives on
             // this channel; forward it as a repaint so the window stays asleep
