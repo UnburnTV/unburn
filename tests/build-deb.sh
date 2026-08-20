@@ -8,7 +8,7 @@ extract_dir=$(mktemp -d)
 log_file=$(mktemp)
 trap 'rm -rf "$extract_dir" "$log_file"' EXIT HUP INT TERM
 
-version=$(cargo metadata --no-deps --format-version 1 |
+version=$(cargo +nightly metadata --locked --no-deps --format-version 1 |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
 tag="v$version"
 architecture=$(dpkg --print-architecture)

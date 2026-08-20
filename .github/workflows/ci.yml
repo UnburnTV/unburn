@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [ master ]
+    tags:
+      - "v*"
   pull_request:
     branches: [ master ]
 
@@ -50,3 +52,50 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release
+
+  package:
+    name: Build Ubuntu package
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ci
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-randr0-dev \
+            libxkbcommon-dev \
+            libwayland-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Debian package
+        run: ./scripts/build-deb.sh "${{ github.ref_name }}"
+
+      - name: Install and verify Debian package
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          installed_version=$(unburn --version)
+          expected_version="unburn ${GITHUB_REF_NAME#v}"
+          test "$installed_version" = "$expected_version"
+          echo "Installed $installed_version"
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: unburn-${{ github.ref_name }}-${{ runner.arch }}
+          path: dist/*.deb
+          if-no-files-found: error

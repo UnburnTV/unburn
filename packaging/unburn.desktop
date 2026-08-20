@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=unburn
+Comment=Display uniformity compensation overlay
+Exec=unburn
+Terminal=false
+Categories=Utility;
