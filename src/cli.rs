@@ -2,6 +2,8 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::overlay::TestPattern;
+
 /// Display uniformity compensation: a transparent overlay that evens out
 /// smooth brightness defects on a monitor or TV.
 #[derive(Debug, Parser)]
@@ -9,13 +11,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
-
-    /// Show a fullscreen calibration pattern at startup.
-    ///
-    /// Accepts a grey level in percent (`0`, `5`, `10`, `25`, `50`, `75`,
-    /// `100`) or a colour name (`black`, `white`, `red`, `green`, `blue`).
-    #[arg(long, global = true, value_name = "PATTERN")]
-    pub test_pattern: Option<String>,
 
     /// Force a particular overlay backend instead of detecting one.
     #[arg(long, global = true, value_enum, default_value_t = BackendChoice::Auto)]
@@ -42,6 +37,16 @@ pub enum Command {
     Check,
     /// List the connected monitors as unburn sees them, then exit.
     ListDisplays,
+    /// Show a fullscreen test pattern, then exit when it is closed.
+    Test {
+        /// Grey percentage or colour name to display.
+        #[arg(
+            default_value = "25",
+            value_name = "PATTERN",
+            value_parser = parse_test_pattern
+        )]
+        pattern: TestPattern,
+    },
     /// Install or remove the "start on login" entry, then exit.
     Autostart {
         #[arg(value_enum, value_name = "on|off")]
@@ -60,6 +65,10 @@ pub enum BackendChoice {
 pub enum OnOff {
     On,
     Off,
+}
+
+fn parse_test_pattern(value: &str) -> Result<TestPattern, String> {
+    TestPattern::parse(value).ok_or_else(|| format!("unknown test pattern: {value}"))
 }
 
 impl Args {
@@ -106,10 +115,16 @@ mod tests {
             Some(Command::Hide)
         );
         assert_eq!(
-            Args::parse_from(["unburn", "--test-pattern", "50"])
-                .test_pattern
-                .as_deref(),
-            Some("50")
+            Args::parse_from(["unburn", "test"]).command,
+            Some(Command::Test {
+                pattern: TestPattern::Grey(25)
+            })
+        );
+        assert_eq!(
+            Args::parse_from(["unburn", "test", "50"]).command,
+            Some(Command::Test {
+                pattern: TestPattern::Grey(50)
+            })
         );
         assert_eq!(
             Args::parse_from(["unburn", "autostart", "on"]).command,
@@ -123,6 +138,12 @@ mod tests {
             Args::parse_from(["unburn", "list-displays"]).command,
             Some(Command::ListDisplays)
         );
+    }
+
+    #[test]
+    fn rejects_removed_or_unknown_test_pattern_syntax() {
+        assert!(Args::try_parse_from(["unburn", "--test-pattern", "50"]).is_err());
+        assert!(Args::try_parse_from(["unburn", "test", "nonsense"]).is_err());
     }
 
     #[test]

@@ -382,7 +382,7 @@ impl TestPattern {
         }
     }
 
-    /// Parse the `--test-pattern` argument.
+    /// Parse the `test` subcommand's pattern argument.
     pub fn parse(text: &str) -> Option<TestPattern> {
         let text = text.trim().trim_end_matches('%');
         match text.to_ascii_lowercase().as_str() {
