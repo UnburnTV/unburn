@@ -43,6 +43,9 @@ pub struct App {
 
     service: Option<OverlayService>,
     reports: Vec<BackendReport>,
+    /// Monitors to work from when there is no backend to ask. Empty for a
+    /// normally started app; see [`App::offline`].
+    offline_outputs: Vec<OutputInfo>,
 
     /// The instant bypass. Nothing is recomputed when this flips.
     bypass: bool,
@@ -81,6 +84,7 @@ impl App {
             profile_name,
             service: None,
             reports: platform::detect(),
+            offline_outputs: Vec::new(),
             bypass: false,
             selected_display: None,
             selected_defect: None,
@@ -108,6 +112,38 @@ impl App {
         app.adopt_connected_displays();
         app.sync();
         Ok(app)
+    }
+
+    /// An app that never touches a display server, working from the profile,
+    /// monitors and backend reports it is handed.
+    ///
+    /// Everything the calibration window draws comes from here, so the window
+    /// can be rendered on a machine that has neither the monitor nor the
+    /// compositor the profile describes. That is what the documentation
+    /// screenshot tool uses; nothing else should need it.
+    pub fn offline(profile: Profile, outputs: Vec<OutputInfo>, reports: Vec<BackendReport>) -> App {
+        let mut app = App {
+            profile,
+            profile_path: PathBuf::from("config.toml"),
+            profile_name: None,
+            service: None,
+            reports,
+            offline_outputs: outputs,
+            bypass: false,
+            selected_display: None,
+            selected_defect: None,
+            editing: false,
+            calibration_disc: None,
+            hovered_defect: None,
+            disc_colors: DiscSwatch::default_colors(),
+            show_mode: ShowMode::default(),
+            test_pattern: None,
+            unsaved: false,
+            should_quit: false,
+            status: String::new(),
+        };
+        app.adopt_connected_displays();
+        app
     }
 
     /// Start the overlay backend. `notify` is called when the backend has news.
@@ -157,10 +193,10 @@ impl App {
     }
 
     pub fn outputs(&self) -> Vec<OutputInfo> {
-        self.service
-            .as_ref()
-            .map(|s| s.outputs())
-            .unwrap_or_default()
+        match self.service.as_ref() {
+            Some(service) => service.outputs(),
+            None => self.offline_outputs.clone(),
+        }
     }
 
     pub fn profile_path(&self) -> &PathBuf {

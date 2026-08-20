@@ -10,8 +10,21 @@ readme = "README.md"
 keywords = ["display", "uniformity", "wayland", "x11", "overlay"]
 categories = ["gui"]
 
+[features]
+# The documentation screenshot tool. Not part of the program; it only pulls in
+# a PNG encoder so `tools/screenshot.rs` can write what it renders.
+screenshot = ["dep:image"]
+
+[[bin]]
+name = "unburn-screenshot"
+path = "tools/screenshot.rs"
+required-features = ["screenshot"]
+
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1"
 thiserror = "2.0"

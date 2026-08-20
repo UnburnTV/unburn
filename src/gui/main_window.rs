@@ -74,7 +74,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     confirm_delete_dialog(ui, app, state);
 }
 
-pub(crate) fn apply_ui_scale(style: &mut egui::Style) {
+pub fn apply_ui_scale(style: &mut egui::Style) {
     style.spacing.interact_size *= UI_SCALE;
     style.spacing.button_padding *= UI_SCALE;
     style.spacing.icon_width *= UI_SCALE;

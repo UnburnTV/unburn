@@ -2802,6 +2802,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "image",
  "rustix 1.1.4",
  "serde",
  "smithay-client-toolkit 0.21.1",
