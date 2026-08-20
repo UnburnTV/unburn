@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    cli::{Args, BackendChoice},
+    cli::{Args, BackendChoice, Command},
     compensation::{self, Defect, RadialDefect, Vec2},
     config::{self, Config, DisplayConfig},
     display::{DisplayIdentity, OutputInfo},
@@ -26,6 +26,16 @@ const MIN_RADIUS: f32 = 0.002;
 const MAX_RADIUS: f32 = 2.0;
 const MIN_FALLOFF: f32 = 0.2;
 const MAX_FALLOFF: f32 = 4.0;
+
+fn initial_test_pattern(args: &Args) -> Option<TestPatternState> {
+    let Some(Command::Test { pattern }) = &args.command else {
+        return None;
+    };
+    Some(TestPatternState {
+        pattern: *pattern,
+        ..Default::default()
+    })
+}
 
 /// Largest per-channel strength the editor will set, in either direction.
 ///
@@ -101,14 +111,7 @@ impl App {
             hovered_defect: None,
             disc_colors: DiscSwatch::default_colors(),
             show_mode: ShowMode::default(),
-            test_pattern: args
-                .test_pattern
-                .as_deref()
-                .and_then(TestPattern::parse)
-                .map(|pattern| TestPatternState {
-                    pattern,
-                    ..Default::default()
-                }),
+            test_pattern: initial_test_pattern(args),
             unsaved: false,
             should_quit: false,
             status: String::new(),
@@ -766,6 +769,7 @@ fn cloned_beside(source: &RadialDefect) -> RadialDefect {
 mod tests {
     use super::*;
     use crate::compensation::RadialDefect;
+    use clap::Parser;
 
     fn display_with(strength: f32, enabled: bool) -> DisplayConfig {
         let mut display = DisplayConfig::new(DisplayIdentity {
@@ -778,6 +782,19 @@ mod tests {
             ..Default::default()
         }));
         display
+    }
+
+    #[test]
+    fn test_command_selects_the_initial_pattern() {
+        let args = Args::parse_from(["unburn", "test"]);
+
+        assert_eq!(
+            initial_test_pattern(&args),
+            Some(TestPatternState {
+                pattern: TestPattern::Grey(25),
+                ..Default::default()
+            })
+        );
     }
 
     #[test]

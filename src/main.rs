@@ -16,6 +16,21 @@ use unburn::{
     config, gui, ipc, platform,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalMode {
+    Gui,
+    Headless,
+    Test,
+}
+
+fn local_mode(args: &Args) -> LocalMode {
+    match args.command {
+        Some(Command::Start) => LocalMode::Headless,
+        Some(Command::Test { .. }) => LocalMode::Test,
+        _ => LocalMode::Gui,
+    }
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
     init_logging(&args);
@@ -50,7 +65,11 @@ fn run(args: Args) -> Result<ExitCode, String> {
             return remote_control(&args);
         }
         Some(Command::ListDisplays) => return list_displays(&args),
-        Some(Command::Start) | None => {}
+        Some(Command::Start | Command::Test { .. }) | None => {}
+    }
+
+    if local_mode(&args) == LocalMode::Test {
+        return run_test(&args);
     }
 
     // One instance owns the overlays; a second one just hands over its request.
@@ -74,11 +93,35 @@ fn run(args: Args) -> Result<ExitCode, String> {
         info!("{}", report.describe().replace('\n', " "));
     }
 
-    if matches!(args.command, Some(Command::Start)) {
-        run_headless(app, server, wake_rx)
-    } else {
-        gui::run(app, server, wake_rx).map(|()| ExitCode::SUCCESS)
+    match local_mode(&args) {
+        LocalMode::Headless => run_headless(app, server, wake_rx),
+        LocalMode::Gui => gui::run(app, server, wake_rx).map(|()| ExitCode::SUCCESS),
+        LocalMode::Test => unreachable!("test mode returns before binding the control socket"),
     }
+}
+
+/// Show a test pattern without binding the normal instance socket or opening
+/// the configuration window.
+fn run_test(args: &Args) -> Result<ExitCode, String> {
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    let mut app = App::start(args, wake_tx)?;
+    if let Some(report) = app.active_report() {
+        info!("{}", report.describe().replace('\n', " "));
+    }
+
+    while app.test_pattern().is_some() {
+        app.pump();
+        if app.test_pattern().is_none() {
+            break;
+        }
+        match wake_rx.recv_timeout(Duration::from_secs(3600)) {
+            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    drop(app);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Talk to the instance that owns the overlays, then get out of the way.
@@ -179,4 +222,17 @@ fn init_logging(args: &Args) {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_command_uses_the_transient_runner() {
+        let args = Args::parse_from(["unburn", "test"]);
+
+        assert_eq!(local_mode(&args), LocalMode::Test);
+    }
 }
