@@ -10,7 +10,7 @@ if ! command -v pandoc >/dev/null 2>&1; then
 fi
 
 rm -rf "$out"
-mkdir -p "$out/docs"
+mkdir -p "$out/docs" "$out/assets"
 
 pandoc "$repo_root/README.md" \
     --from gfm \
@@ -23,6 +23,7 @@ pandoc "$repo_root/README.md" \
 
 cp "$repo_root/site/style.css" "$out/style.css"
 cp "$repo_root/site/CNAME" "$out/CNAME"
+cp "$repo_root/assets/logo.png" "$out/assets/logo.png"
 
 # Keep the docs/ prefix used by README image paths.
 for image in "$repo_root"/docs/*.png "$repo_root"/docs/*.jpg "$repo_root"/docs/*.jpeg "$repo_root"/docs/*.gif "$repo_root"/docs/*.svg "$repo_root"/docs/*.webp

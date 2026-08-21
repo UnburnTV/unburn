@@ -14,6 +14,8 @@ fail() {
 }
 
 test -f "$html" || fail "did not write index.html"
+grep -q 'assets/logo.png' "$html" || fail "missing logo in the rendered header"
+grep -q 'rel="icon"' "$html" || fail "missing favicon"
 grep -q 'Fork me on GitHub' "$html" || fail "missing Fork me on GitHub badge"
 grep -q 'https://github.com/UnburnTV/unburn"' "$html" || fail "fork badge should link to the GitHub repository"
 grep -q 'macOS' "$html" || fail "missing macOS button"
@@ -52,6 +54,7 @@ if ! awk 'NR == 1 && $0 == "unburn.tv" { ok = 1 } END { exit !ok }' \
     "$repo_root/dist/site/CNAME"; then
     fail "CNAME must be unburn.tv"
 fi
+test -f "$repo_root/dist/site/assets/logo.png" || fail "missing assets/logo.png"
 test -f "$repo_root/dist/site/docs/defects.jpg" || fail "missing docs/defects.jpg"
 test -f "$repo_root/dist/site/docs/edit-mode.png" || fail "missing docs/edit-mode.png"
 

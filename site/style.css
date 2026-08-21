@@ -29,10 +29,22 @@ main {
 }
 
 h1 {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
   margin: 0 0 1.25rem;
   font-size: 2rem;
   letter-spacing: -0.03em;
   font-weight: 650;
+}
+
+h1 img {
+  width: 5rem;
+  height: 5rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  flex-shrink: 0;
 }
 
 h1 a {
