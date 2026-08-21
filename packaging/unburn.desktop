@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=unburn
-Comment=Display uniformity compensation overlay
+Comment=Corrects OLED and LCD mura, also known as "backlight bleed", that appear due to aging or applied pressure
 Exec=unburn
 Terminal=false
 Categories=Utility;
