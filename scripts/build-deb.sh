@@ -63,11 +63,10 @@ Version: $version
 Section: utils
 Priority: optional
 Architecture: $architecture
-Maintainer: unburn maintainers <noreply@unburn.tv>
+Maintainer: Vladimir Kalnitsky <klntsky@gmail.com>
 Depends: libc6, libgcc-s1, libegl1, libgl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrender1
 Homepage: https://unburn.tv
-Description: Display uniformity compensation overlay
- Corrects OLED and LCD brightness defects with a configurable overlay.
+Description: Corrects OLED and LCD mura, also known as "backlight bleed", that appear due to aging or applied pressure.
 EOF
 
 rm -f "$output"
