@@ -5,8 +5,7 @@ alwaysApply: true
 
 # Rust Development Commands
 
-- Use the Rust nightly toolchain for every Rust command.
-- Prefer explicit commands such as `cargo +nightly check`, `cargo +nightly test`, `cargo +nightly clippy`, and `cargo +nightly fmt`.
+- We use rust nightly only
 - Never run a release-profile command during development unless the developer explicitly asks for it.
 - This prohibition includes `cargo build --release`, `cargo test --release`, `cargo run --release`, and commands using `--profile release`.
 - Use the default development or test profile for normal verification.

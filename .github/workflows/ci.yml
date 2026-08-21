@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - test-release
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
     branches: [ master ]
 
@@ -32,7 +36,7 @@ jobs:
             libwayland-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
 
@@ -50,3 +54,71 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release
+
+      - name: Run packaging tests
+        run: tests/build-deb.sh
+
+  package:
+    name: Build Ubuntu package
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/test-release'
+    needs: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb-randr0-dev \
+            libxkbcommon-dev \
+            libwayland-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Cargo dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Debian package
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            release_ref="$GITHUB_REF_NAME"
+          else
+            version=$(cargo metadata --locked --no-deps --format-version 1 |
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+            release_ref="v$version"
+          fi
+          ./scripts/build-deb.sh "$release_ref"
+
+      - name: Install and verify Debian package
+        run: |
+          package=$(printf '%s\n' ./dist/*.deb)
+          expected_version="unburn $(dpkg-deb --field "$package" Version)"
+          sudo apt-get install -y ./dist/*.deb
+          installed_version=$(unburn --version)
+          test "$installed_version" = "$expected_version"
+          echo "Installed $installed_version"
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: unburn-${{ github.ref_name }}-${{ matrix.architecture }}
+          path: dist/*.deb
+          if-no-files-found: error
