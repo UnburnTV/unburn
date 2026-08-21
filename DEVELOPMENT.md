@@ -8,6 +8,14 @@ cargo test
 The build needs the X11 and Wayland client libraries with their development
 headers: `libxcb`, `libxkbcommon` and `libwayland-client`.
 
+## Ubuntu package
+
+Build an Ubuntu-compatible Debian package for a release tag:
+
+```sh
+./scripts/build-deb.sh v0.1.0
+```
+
 ## Updating the screenshot
 
 The picture in `README.md` is generated, not captured by hand. `tools/screenshot.rs`
