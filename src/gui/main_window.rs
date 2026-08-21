@@ -11,17 +11,13 @@ use crate::{
     overlay::{DiscSwatch, ShowMode},
 };
 
-use super::UiState;
+use super::{icons::BtnIcon, UiState};
 
 /// Space left to the right of a slider's rail for its value box and label.
 const SLIDER_LABEL_ROOM: f32 = 230.0;
 
 /// Smallest strength the slider resolves, in percent.
 const STRENGTH_FLOOR: f64 = 0.5;
-
-/// Slot reserved for a stroked glyph on the spot-list buttons.
-const ICON_ATOM: &str = "spot_btn_icon";
-const ICON_SIZE: f32 = 18.5;
 
 /// How much larger the calibration window is than egui's defaults.
 const UI_SCALE: f32 = 1.4;
@@ -283,10 +279,8 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
                 }
                 let label = ui.label(name);
 
-                let edit = icon_button("Edit").selected(params_this).atom_ui(ui);
-                paint_icon(ui, &edit, BtnIcon::Edit, None);
-                let edit_resp = edit
-                    .response
+                let edit_resp = ui
+                    .add(icon_button(BtnIcon::Edit, "Edit").selected(params_this))
                     .on_hover_text("Show strength, falloff and preview disc colours for this spot");
                 if edit_resp.clicked() {
                     if params_this {
@@ -301,12 +295,12 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
                     }
                 }
 
-                let move_btn = icon_button("Move").selected(moving_this).atom_ui(ui);
-                paint_icon(ui, &move_btn, BtnIcon::Move, None);
-                let move_resp = move_btn.response.on_hover_text(
-                    "Drag this spot on the screen: wheel to resize, Shift+wheel for \
+                let move_resp = ui
+                    .add(icon_button(BtnIcon::Move, "Move").selected(moving_this))
+                    .on_hover_text(
+                        "Drag this spot on the screen: wheel to resize, Shift+wheel for \
 strength, Alt+wheel or the outer handle to rotate, Esc or a click on empty screen to leave",
-                );
+                    );
                 if move_resp.clicked() {
                     if moving_this {
                         app.set_editing(false);
@@ -327,21 +321,16 @@ back when you leave.",
                     }
                 }
 
-                let clone = icon_button("Clone").atom_ui(ui);
-                paint_icon(ui, &clone, BtnIcon::Clone, None);
-                let clone_resp = clone
-                    .response
+                let clone_resp = ui
+                    .add(icon_button(BtnIcon::Clone, "Clone"))
                     .on_hover_text("Copy this spot, offset so both stay reachable");
                 if clone_resp.clicked() {
                     app.clone_defect(*id);
                     state.notice("Cloned the spot beside the original.");
                 }
 
-                let delete = icon_button(RichText::new("Delete").color(egui::Color32::WHITE))
-                    .fill(delete_fill)
-                    .atom_ui(ui);
-                paint_icon(ui, &delete, BtnIcon::Delete, Some(egui::Color32::WHITE));
-                if delete.response.clicked() {
+                let delete = ui.add(icon_button_white(BtnIcon::Delete, "Delete").fill(delete_fill));
+                if delete.clicked() {
                     state.confirm_delete = Some(*id);
                 }
 
@@ -350,7 +339,7 @@ back when you leave.",
                     .union(edit_resp)
                     .union(move_resp)
                     .union(clone_resp)
-                    .union(delete.response)
+                    .union(delete)
             })
             .inner;
 
@@ -377,9 +366,7 @@ back when you leave.",
     app.set_hovered_defect(hovered);
 
     ui.add_space(4.0);
-    let add = icon_button("Add spot").atom_ui(ui);
-    paint_icon(ui, &add, BtnIcon::Add, None);
-    if add.response.clicked() {
+    if ui.add(icon_button(BtnIcon::Add, "Add spot")).clicked() {
         app.add_defect(crate::compensation::Vec2::splat(0.5));
         state.notice("Added a spot in the centre. Press Move to drag it onto the blemish.");
     }
@@ -622,17 +609,16 @@ fn confirm_delete_dialog(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) 
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             let mut choice = None;
-            let cancel = icon_button("Cancel").atom_ui(ui);
-            paint_icon(ui, &cancel, BtnIcon::Cancel, None);
-            if cancel.response.clicked() {
+            let cancel = ui.add(icon_button(BtnIcon::Cancel, "Cancel"));
+            if cancel.clicked() {
                 choice = Some(false);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let delete = icon_button(RichText::new("Delete").color(egui::Color32::WHITE))
-                    .fill(egui::Color32::from_rgb(200, 90, 70))
-                    .atom_ui(ui);
-                paint_icon(ui, &delete, BtnIcon::Delete, Some(egui::Color32::WHITE));
-                if delete.response.clicked() {
+                let delete = ui.add(
+                    icon_button_white(BtnIcon::Delete, "Delete")
+                        .fill(egui::Color32::from_rgb(200, 90, 70)),
+                );
+                if delete.clicked() {
                     choice = Some(true);
                 }
             });
@@ -684,21 +670,17 @@ fn save_config(app: &mut App, state: &mut UiState) {
 
 fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     ui.horizontal(|ui| {
-        let save = icon_button(RichText::new("Save").color(egui::Color32::WHITE))
-            .fill(egui::Color32::from_rgb(70, 170, 110))
-            .atom_ui(ui);
-        paint_icon(ui, &save, BtnIcon::Save, Some(egui::Color32::WHITE));
+        let save = ui.add(
+            icon_button_white(BtnIcon::Save, "Save").fill(egui::Color32::from_rgb(70, 170, 110)),
+        );
         if save
-            .response
             .on_hover_text("Write the current spots to the configuration file")
             .clicked()
         {
             save_config(app, state);
         }
-        let load = icon_button("Reload").atom_ui(ui);
-        paint_icon(ui, &load, BtnIcon::Load, None);
+        let load = ui.add(icon_button(BtnIcon::Load, "Reload"));
         if load
-            .response
             .on_hover_text("Discard unsaved edits and load the configuration file from disk")
             .clicked()
         {
@@ -712,25 +694,26 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     ui.horizontal(|ui| {
         let path = app.config_path().display().to_string();
         ui.label(RichText::new(&path).small().weak());
-        let copy_size = ui.text_style_height(&egui::TextStyle::Small);
-        let copy = egui::Button::new(egui::Atom::custom(
-            egui::Id::new(ICON_ATOM),
-            Vec2::splat(copy_size),
-        ))
-        .frame(false)
-        .atom_ui(ui);
         let copied = state.path_copied.as_deref() == Some(path.as_str());
-        let (icon, color, hover) = if copied {
-            (
-                BtnIcon::Check,
-                Some(egui::Color32::from_rgb(70, 170, 110)),
-                "Copied the configuration path",
-            )
+        let mut glyph = RichText::new(if copied {
+            BtnIcon::Check.glyph()
         } else {
-            (BtnIcon::Copy, None, "Copy the configuration path")
+            BtnIcon::Copy.glyph()
+        })
+        .small();
+        if copied {
+            glyph = glyph.color(egui::Color32::from_rgb(70, 170, 110));
+        }
+        let hover = if copied {
+            "Copied the configuration path"
+        } else {
+            "Copy the configuration path"
         };
-        paint_icon(ui, &copy, icon, color);
-        if copy.response.on_hover_text(hover).clicked() {
+        if ui
+            .add(egui::Button::new(glyph).frame(false))
+            .on_hover_text(hover)
+            .clicked()
+        {
             ui.ctx().copy_text(path.clone());
             state.path_copied = Some(path);
         }
@@ -779,308 +762,14 @@ fn bottom_row(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
     });
 }
 
-#[derive(Clone, Copy)]
-enum BtnIcon {
-    Edit,
-    Move,
-    Clone,
-    Delete,
-    Add,
-    Save,
-    Load,
-    Copy,
-    Check,
-    Cancel,
+fn icon_button<'a>(icon: BtnIcon, text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
+    egui::Button::new((RichText::new(icon.glyph()), text.into()))
 }
 
-fn icon_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
+fn icon_button_white<'a>(icon: BtnIcon, label: &str) -> egui::Button<'a> {
+    let white = egui::Color32::WHITE;
     egui::Button::new((
-        egui::Atom::custom(egui::Id::new(ICON_ATOM), Vec2::splat(ICON_SIZE)),
-        text.into(),
+        RichText::new(icon.glyph()).color(white),
+        RichText::new(label).color(white),
     ))
-}
-
-fn paint_icon(
-    ui: &egui::Ui,
-    laid_out: &egui::AtomLayoutResponse,
-    icon: BtnIcon,
-    color: Option<egui::Color32>,
-) {
-    let Some(rect) = laid_out.rect(egui::Id::new(ICON_ATOM)) else {
-        return;
-    };
-    let color = color.unwrap_or_else(|| ui.style().interact(&laid_out.response).text_color());
-    let painter = ui.painter();
-    let stroke = egui::Stroke::new(rect.width() * 0.104, color);
-    let r = rect.shrink(rect.width() * 0.096);
-
-    match icon {
-        BtnIcon::Edit => paint_edit(painter, r, stroke, color),
-        BtnIcon::Move => paint_move(painter, r, stroke),
-        BtnIcon::Clone => paint_clone(painter, r, stroke),
-        BtnIcon::Delete => paint_delete(painter, r, stroke),
-        BtnIcon::Add => paint_add(painter, r, stroke),
-        BtnIcon::Save => paint_save(painter, r, stroke),
-        BtnIcon::Load => paint_load(painter, r, stroke),
-        BtnIcon::Copy => paint_copy(painter, r, stroke),
-        BtnIcon::Check => paint_check(painter, r, stroke),
-        BtnIcon::Cancel => paint_cancel(painter, r, stroke),
-    }
-}
-
-fn paint_edit(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke, color: egui::Color32) {
-    let dir = Vec2::new(1.0, -1.0).normalized();
-    let perp = Vec2::new(dir.y, -dir.x);
-    let c = r.center();
-    let half = r.width() * 0.38;
-    let tip_len = r.width() * 0.305;
-    let half_w = r.width() * 0.162;
-    let eraser = c - dir * half;
-    let neck = c + dir * (half - tip_len);
-    let tip = c + dir * half;
-    painter.add(egui::Shape::closed_line(
-        vec![
-            eraser + perp * half_w,
-            neck + perp * half_w,
-            tip,
-            neck - perp * half_w,
-            eraser - perp * half_w,
-        ],
-        stroke,
-    ));
-    painter.line_segment([eraser + perp * half_w, eraser - perp * half_w], stroke);
-    painter.circle_filled(tip, r.width() * 0.057, color);
-}
-
-fn paint_move(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let c = r.center();
-    let arm = r.width() * 0.38;
-    let head = r.width() * 0.16;
-    painter.line_segment([pos2(c.x, c.y - arm), pos2(c.x, c.y + arm)], stroke);
-    painter.line_segment([pos2(c.x - arm, c.y), pos2(c.x + arm, c.y)], stroke);
-    painter.line_segment(
-        [pos2(c.x, c.y - arm), pos2(c.x - head, c.y - arm + head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x, c.y - arm), pos2(c.x + head, c.y - arm + head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x, c.y + arm), pos2(c.x - head, c.y + arm - head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x, c.y + arm), pos2(c.x + head, c.y + arm - head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x - arm, c.y), pos2(c.x - arm + head, c.y - head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x - arm, c.y), pos2(c.x - arm + head, c.y + head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x + arm, c.y), pos2(c.x + arm - head, c.y - head)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(c.x + arm, c.y), pos2(c.x + arm - head, c.y + head)],
-        stroke,
-    );
-}
-
-fn paint_clone(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let shift = r.width() * 0.333;
-    let back = egui::Rect::from_min_max(
-        pos2(r.left(), r.top()),
-        pos2(r.right() - shift, r.bottom() - shift),
-    );
-    let front = egui::Rect::from_min_max(
-        pos2(r.left() + shift, r.top() + shift),
-        pos2(r.right(), r.bottom()),
-    );
-    let radius = r.width() * 0.095;
-    painter.rect_stroke(back, radius, stroke, StrokeKind::Middle);
-    painter.rect_stroke(front, radius, stroke, StrokeKind::Middle);
-}
-
-fn paint_delete(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let w = r.width();
-    let lid_y = r.top() + w * 0.343;
-    let body = egui::Rect::from_min_max(
-        pos2(r.left() + w * 0.171, lid_y),
-        pos2(r.right() - w * 0.171, r.bottom() - w * 0.038),
-    );
-    painter.rect_stroke(body, w * 0.114, stroke, StrokeKind::Middle);
-    painter.line_segment(
-        [
-            pos2(r.left() + w * 0.057, lid_y),
-            pos2(r.right() - w * 0.057, lid_y),
-        ],
-        stroke,
-    );
-    let handle_y = r.top() + w * 0.133;
-    let handle_w = w * 0.190;
-    let cx = r.center().x;
-    painter.line_segment(
-        [pos2(cx - handle_w, handle_y), pos2(cx + handle_w, handle_y)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(cx - handle_w, handle_y), pos2(cx - handle_w, lid_y)],
-        stroke,
-    );
-    painter.line_segment(
-        [pos2(cx + handle_w, handle_y), pos2(cx + handle_w, lid_y)],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(cx, body.top() + w * 0.210),
-            pos2(cx, body.bottom() - w * 0.152),
-        ],
-        stroke,
-    );
-}
-
-fn paint_add(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let c = r.center();
-    let arm = r.width() * 0.32;
-    painter.line_segment([pos2(c.x - arm, c.y), pos2(c.x + arm, c.y)], stroke);
-    painter.line_segment([pos2(c.x, c.y - arm), pos2(c.x, c.y + arm)], stroke);
-}
-
-fn paint_save(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let c = r.center();
-    let w = r.width();
-    let shaft_top = r.top() + w * 0.08;
-    let shaft_bot = c.y + w * 0.08;
-    painter.line_segment([pos2(c.x, shaft_top), pos2(c.x, shaft_bot)], stroke);
-    let head = w * 0.20;
-    painter.line_segment(
-        [
-            pos2(c.x, shaft_bot + w * 0.04),
-            pos2(c.x - head, shaft_bot - head * 0.6),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(c.x, shaft_bot + w * 0.04),
-            pos2(c.x + head, shaft_bot - head * 0.6),
-        ],
-        stroke,
-    );
-    let tray_y = r.bottom() - w * 0.14;
-    painter.line_segment(
-        [
-            pos2(r.left() + w * 0.14, tray_y - w * 0.16),
-            pos2(r.left() + w * 0.14, tray_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(r.left() + w * 0.14, tray_y),
-            pos2(r.right() - w * 0.14, tray_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(r.right() - w * 0.14, tray_y),
-            pos2(r.right() - w * 0.14, tray_y - w * 0.16),
-        ],
-        stroke,
-    );
-}
-
-fn paint_load(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let c = r.center();
-    let w = r.width();
-    let shaft_top = r.top() + w * 0.10;
-    let shaft_bot = c.y + w * 0.16;
-    painter.line_segment([pos2(c.x, shaft_top), pos2(c.x, shaft_bot)], stroke);
-    let head = w * 0.20;
-    painter.line_segment(
-        [
-            pos2(c.x, shaft_top),
-            pos2(c.x - head, shaft_top + head * 0.9),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(c.x, shaft_top),
-            pos2(c.x + head, shaft_top + head * 0.9),
-        ],
-        stroke,
-    );
-    let tray_y = r.bottom() - w * 0.14;
-    painter.line_segment(
-        [
-            pos2(r.left() + w * 0.14, tray_y - w * 0.16),
-            pos2(r.left() + w * 0.14, tray_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(r.left() + w * 0.14, tray_y),
-            pos2(r.right() - w * 0.14, tray_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(r.right() - w * 0.14, tray_y),
-            pos2(r.right() - w * 0.14, tray_y - w * 0.16),
-        ],
-        stroke,
-    );
-}
-
-fn paint_copy(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let w = r.width();
-    let clip = egui::Rect::from_min_max(
-        pos2(r.center().x - w * 0.18, r.top() + w * 0.04),
-        pos2(r.center().x + w * 0.18, r.top() + w * 0.28),
-    );
-    painter.rect_stroke(clip, w * 0.06, stroke, StrokeKind::Middle);
-    let board = egui::Rect::from_min_max(
-        pos2(r.left() + w * 0.16, r.top() + w * 0.18),
-        pos2(r.right() - w * 0.16, r.bottom() - w * 0.06),
-    );
-    painter.rect_stroke(board, w * 0.10, stroke, StrokeKind::Middle);
-}
-
-fn paint_check(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let w = r.width();
-    let stroke = egui::Stroke::new(stroke.width.max(w * 0.14), stroke.color);
-    let start = pos2(r.left() + w * 0.16, r.center().y + w * 0.04);
-    let mid = pos2(r.center().x - w * 0.04, r.bottom() - w * 0.20);
-    let end = pos2(r.right() - w * 0.14, r.top() + w * 0.20);
-    painter.line_segment([start, mid], stroke);
-    painter.line_segment([mid, end], stroke);
-}
-
-fn paint_cancel(painter: &egui::Painter, r: egui::Rect, stroke: egui::Stroke) {
-    let inset = r.width() * 0.22;
-    painter.line_segment(
-        [
-            pos2(r.left() + inset, r.top() + inset),
-            pos2(r.right() - inset, r.bottom() - inset),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(r.right() - inset, r.top() + inset),
-            pos2(r.left() + inset, r.bottom() - inset),
-        ],
-        stroke,
-    );
 }

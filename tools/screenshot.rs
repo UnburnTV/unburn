@@ -26,7 +26,7 @@ use unburn::{
     compensation::{Defect, RadialDefect, Rgb, Vec2},
     config::Config,
     display::{DisplayIdentity, OutputId, OutputInfo, Transform},
-    gui::{main_window, UiState},
+    gui::{icons, main_window, UiState},
     platform::{BackendKind, BackendReport, Support},
 };
 
@@ -90,6 +90,7 @@ fn main() -> Result<(), String> {
         "unburn-screenshot",
         options,
         Box::new(move |cc| {
+            icons::install(&cc.egui_ctx);
             cc.egui_ctx.all_styles_mut(main_window::apply_ui_scale);
             Ok(Box::new(Shot {
                 app,

@@ -4,6 +4,7 @@
 //! separate from the overlay: it only edits the configuration and hands the
 //! result to the overlay backend.
 
+pub mod icons;
 pub mod main_window;
 
 use std::{
@@ -65,6 +66,7 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
         "unburn",
         options,
         Box::new(move |cc| {
+            icons::install(&cc.egui_ctx);
             cc.egui_ctx.all_styles_mut(main_window::apply_ui_scale);
 
             // Anything the backend or the control socket reports arrives on
