@@ -58,7 +58,8 @@ pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), Stri
         viewport: egui::ViewportBuilder::default()
             .with_title("unburn — display compensation")
             .with_inner_size([980.0, 660.0])
-            .with_min_inner_size([720.0, 520.0]),
+            .with_min_inner_size([720.0, 520.0])
+            .with_icon(icons::window_icon()),
         ..Default::default()
     };
 

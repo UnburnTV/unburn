@@ -53,6 +53,8 @@ cargo build --locked --release --bin unburn
 install -Dm755 "$target_dir/release/unburn" "$package_root/usr/bin/unburn"
 install -Dm644 packaging/unburn.desktop \
     "$package_root/usr/share/applications/unburn.desktop"
+install -Dm644 assets/logo.png \
+    "$package_root/usr/share/icons/hicolor/512x512/apps/unburn.png"
 install -Dm644 packaging/copyright \
     "$package_root/usr/share/doc/unburn/copyright"
 mkdir -p "$package_root/DEBIAN" "$output_dir"

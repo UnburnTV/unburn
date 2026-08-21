@@ -82,7 +82,8 @@ fn main() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("unburn - display compensation")
-            .with_inner_size(size),
+            .with_inner_size(size)
+            .with_icon(icons::window_icon()),
         ..Default::default()
     };
 

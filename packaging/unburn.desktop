@@ -3,5 +3,7 @@ Type=Application
 Name=unburn
 Comment=Corrects OLED and LCD mura, also known as "backlight bleed", that appear due to aging or applied pressure
 Exec=unburn
+Icon=unburn
+StartupWMClass=unburn
 Terminal=false
 Categories=Utility;

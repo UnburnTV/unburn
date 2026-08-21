@@ -26,6 +26,12 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(phosphor_fonts());
 }
 
+/// Window / taskbar icon. eframe otherwise falls back to its generic gear.
+pub fn window_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../assets/logo.png"))
+        .expect("assets/logo.png is a valid PNG")
+}
+
 #[derive(Clone, Copy)]
 pub enum BtnIcon {
     Edit,
@@ -82,5 +88,17 @@ mod tests {
         assert!(fonts.font_data.contains_key("phosphor"));
         let proportional = &fonts.families[&egui::FontFamily::Proportional];
         assert_eq!(proportional.get(1).map(String::as_str), Some("phosphor"));
+    }
+
+    #[test]
+    fn window_icon_is_the_bundled_logo() {
+        let icon = window_icon();
+        assert_eq!(icon.width, 800);
+        assert_eq!(icon.height, 800);
+        assert_eq!(icon.rgba.len(), 800 * 800 * 4);
+        assert!(
+            icon.rgba.iter().any(|channel| *channel != 0),
+            "logo pixels should not be fully transparent"
+        );
     }
 }

@@ -55,6 +55,7 @@ test "$(dpkg-deb --field "$package" Depends)" = "$expected_dependencies"
 dpkg-deb --extract "$package" "$extract_dir"
 test -x "$extract_dir/usr/bin/unburn"
 test -f "$extract_dir/usr/share/applications/unburn.desktop"
+test -f "$extract_dir/usr/share/icons/hicolor/512x512/apps/unburn.png"
 test -f "$extract_dir/usr/share/doc/unburn/copyright"
 test "$license" = "GPL-3.0-only"
 test -f LICENSE
@@ -118,6 +119,7 @@ assert_workflow_contains 'uses: actions/upload-artifact@v4'
 assert_workflow_not_contains 'softprops/action-gh-release'
 assert_workflow_not_contains 'gh release'
 assert_file_contains DEVELOPMENT.md './scripts/build-deb.sh v0.1.0'
+assert_file_contains packaging/unburn.desktop 'Icon=unburn'
 assert_file_not_contains README.md './scripts/build-deb.sh'
 
 explicit_nightly="+night""ly"
