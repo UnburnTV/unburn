@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: unburn
-Source: https://github.com/klntsky/unburn
+Source: https://github.com/UnburnTV/unburn
 
 Files: *
 Copyright: 2026 Vladimir Kalnitsky
