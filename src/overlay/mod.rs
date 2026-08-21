@@ -51,7 +51,7 @@ impl ShowMode {
     }
 }
 
-/// A colour the user can put on the rotating calibration disc.
+/// A color the user can put on the rotating calibration disc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiscSwatch {
     pub label: &'static str,

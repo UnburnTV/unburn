@@ -4,10 +4,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::overlay::TestPattern;
 
-/// Display uniformity compensation: a transparent overlay that evens out
-/// smooth brightness defects on a monitor or TV.
 #[derive(Debug, Parser)]
-#[command(name = "unburn", version, about, long_about = None)]
+#[command(
+    name = "unburn",
+    version,
+    about = env!("CARGO_PKG_DESCRIPTION"),
+    long_about = None
+)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -39,7 +42,7 @@ pub enum Command {
     ListDisplays,
     /// Show a fullscreen test pattern, then exit when it is closed.
     Test {
-        /// Grey percentage or colour name to display.
+        /// Grey percentage or color name to display.
         #[arg(
             default_value = "25",
             value_name = "PATTERN",

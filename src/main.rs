@@ -1,4 +1,4 @@
-//! unburn — display uniformity compensation.
+//! unburn.tv - display defect compensation.
 
 use std::{
     process::ExitCode,

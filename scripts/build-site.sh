@@ -18,7 +18,7 @@ pandoc "$repo_root/README.md" \
     --standalone \
     --template="$repo_root/site/template.html" \
     --lua-filter="$repo_root/site/insert-downloads.lua" \
-    --metadata title=unburn \
+    --metadata title="unburn.tv - display defect compensation" \
     --output="$out/index.html"
 
 cp "$repo_root/site/style.css" "$out/style.css"

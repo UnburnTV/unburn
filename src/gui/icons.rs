@@ -1,7 +1,7 @@
 //! Phosphor Icons for the calibration window.
 //!
 //! The glyphs are the Regular weight of [Phosphor](https://phosphoricons.com/),
-//! registered as a fallback so they render at the same size and colour as the
+//! registered as a fallback so they render at the same size and color as the
 //! button labels. The bundled font and its MIT licence live in `assets/fonts/`.
 
 use std::sync::Arc;

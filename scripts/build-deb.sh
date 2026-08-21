@@ -33,6 +33,16 @@ import sys
 packages = json.load(sys.stdin)["packages"]
 print(next(package["version"] for package in packages if package["name"] == "unburn"))
 ')
+description=$(printf '%s' "$metadata" | python3 -c '
+import json
+import sys
+
+packages = json.load(sys.stdin)["packages"]
+text = next(package["description"] for package in packages if package["name"] == "unburn")
+if "\n" in text:
+    raise SystemExit("build-deb: crate description must be a single line")
+print(text)
+')
 target_dir=$(printf '%s' "$metadata" |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 
@@ -68,7 +78,7 @@ Architecture: $architecture
 Maintainer: Vladimir Kalnitsky <klntsky@gmail.com>
 Depends: libc6, libgcc-s1, libegl1, libgl1, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrender1
 Homepage: https://unburn.tv
-Description: Corrects OLED and LCD mura, also known as "backlight bleed", that appear due to aging or applied pressure.
+Description: $description
 EOF
 
 rm -f "$output"

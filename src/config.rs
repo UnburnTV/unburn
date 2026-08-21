@@ -130,7 +130,7 @@ impl DisplayConfig {
         self.defects.iter().position(|d| d.id() == id)
     }
 
-    /// What to call the defect at `index`, which is the only name a defect has:
+    /// What to call the spot at `index`, which is the only name a spot has:
     /// its place in this list.
     pub fn defect_label(index: usize) -> String {
         format!("Spot {}", index + 1)
@@ -289,8 +289,8 @@ fn autostart_desktop(command: &str) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=unburn\n\
-         Comment=Display uniformity compensation overlay\n\
+         Name=unburn.tv\n\
+         Comment=display defect compensation\n\
          Exec={command}\n\
          Terminal=false\n\
          Categories=Utility;\n\
@@ -338,6 +338,9 @@ version = 1
 [[display]]
 name = "Living Room TV"
 connector = "HDMI-A-1"
+manufacturer = "SAM"
+model = "QN90B"
+serial = "SN0123456"
 enabled = true
 compensation = 0.82
 gamma = 2.2
@@ -372,6 +375,9 @@ falloff = 1.3
         let display = &profile.displays[0];
         assert_eq!(display.name, "Living Room TV");
         assert_eq!(display.identity.connector.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(display.identity.manufacturer.as_deref(), Some("SAM"));
+        assert_eq!(display.identity.model.as_deref(), Some("QN90B"));
+        assert_eq!(display.identity.serial.as_deref(), Some("SN0123456"));
         assert_eq!(display.compensation, 0.82);
         assert_eq!(display.defects.len(), 2);
 
@@ -508,7 +514,7 @@ falloff = 1.3
             connector: Some("HDMI-A-1".into()),
             manufacturer: Some("SAM".into()),
             model: Some("QN90B".into()),
-            serial: Some("SN12345".into()),
+            serial: Some("SN0123456".into()),
             edid_hash: Some("aaaaaaaaaaaaaaaa".into()),
         }
     }
@@ -552,7 +558,7 @@ falloff = 1.3
 
         assert_eq!(profile.displays.len(), 1);
         let identity = &profile.displays[0].identity;
-        assert_eq!(identity.serial.as_deref(), Some("SN12345"));
+        assert_eq!(identity.serial.as_deref(), Some("SN0123456"));
         assert_eq!(identity.edid_hash.as_deref(), Some("aaaaaaaaaaaaaaaa"));
     }
 

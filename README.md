@@ -1,4 +1,4 @@
-# <img src="assets/logo.png" alt="unburn" width="80" height="80"> [unburn.tv](https://unburn.tv)
+# <img src="assets/logo.png" alt="unburn.tv" width="80" height="80"> [unburn.tv](https://unburn.tv)
 
 Corrects OLED and LCD mura, also known as "backlight bleed", that appear due to aging or applied pressure.
 

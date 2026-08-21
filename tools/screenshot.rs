@@ -26,7 +26,7 @@ use unburn::{
     compensation::{Defect, RadialDefect, Rgb, Vec2},
     config::Config,
     display::{DisplayIdentity, OutputId, OutputInfo, Transform},
-    gui::{icons, main_window, UiState},
+    gui::{icons, main_window, UiState, WINDOW_TITLE},
     platform::{BackendKind, BackendReport, Support},
 };
 
@@ -81,7 +81,7 @@ fn main() -> Result<(), String> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("unburn - display compensation")
+            .with_title(WINDOW_TITLE)
             .with_inner_size(size)
             .with_icon(icons::window_icon()),
         ..Default::default()

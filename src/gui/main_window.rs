@@ -230,7 +230,7 @@ fn mix_u8(a: u8, b: u8, t: f32) -> u8 {
 }
 
 fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
-    ui.heading("Compensated Defects");
+    ui.heading("Spots");
 
     let Some(display) = app.selected_display() else {
         ui.label("Select a display first.");
@@ -251,7 +251,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
         .collect();
 
     if entries.is_empty() {
-        ui.label(RichText::new("None yet. Add a spot over each blemish.").weak());
+        ui.label(RichText::new("None yet. Add a spot over each defect.").weak());
     }
 
     let editing = app.is_editing();
@@ -281,7 +281,7 @@ fn defect_list_inner(ui: &mut egui::Ui, app: &mut App, state: &mut UiState) {
 
                 let edit_resp = ui
                     .add(icon_button(BtnIcon::Edit, "Edit").selected(params_this))
-                    .on_hover_text("Show strength, falloff and preview disc colours for this spot");
+                    .on_hover_text("Show strength, falloff and preview disc colors for this spot");
                 if edit_resp.clicked() {
                     if params_this {
                         state.params_open = None;
@@ -313,7 +313,7 @@ strength, Alt+wheel or the outer handle to rotate, Esc or a click on empty scree
                         app.set_editing(true);
                         state.notice(
                             "The overlay is now interactive, and it takes the whole screen: use it \
-rather than this window until you leave. Drag the spot onto the blemish, wheel to resize, \
+rather than this window until you leave. Drag the spot onto the defect, wheel to resize, \
 Shift+wheel for strength, Alt+wheel or the handle on the arm to rotate, n for a new spot, \
 Esc or a click on empty screen to leave. The correction is not drawn while moving; it comes \
 back when you leave.",
@@ -368,7 +368,7 @@ back when you leave.",
     ui.add_space(4.0);
     if ui.add(icon_button(BtnIcon::Add, "Add spot")).clicked() {
         app.add_defect(crate::compensation::Vec2::splat(0.5));
-        state.notice("Added a spot in the centre. Press Move to drag it onto the blemish.");
+        state.notice("Added a spot in the centre. Press Move to drag it onto the defect.");
     }
 
     if app.is_editing() {
@@ -405,7 +405,7 @@ fn size_sliders_for_table(ui: &mut egui::Ui) {
     ui.spacing_mut().slider_width = room.clamp(120.0, 1400.0);
 }
 
-/// Colours on the rotating disc behind the spot. Several ticked boxes split
+/// Colors on the rotating disc behind the spot. Several ticked boxes split
 /// the disc into equal wedges; none leaves it empty.
 fn disc_color_pickers(ui: &mut egui::Ui, app: &mut App) {
     ui.label("Preview Disc Colors");
@@ -434,8 +434,8 @@ fn disc_color_pickers(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-/// A checkbox whose box is filled with the swatch colour. The label uses the
-/// theme text colour so every name reads the same.
+/// A checkbox whose box is filled with the swatch color. The label uses the
+/// theme text color so every name reads the same.
 fn colored_checkbox(ui: &mut egui::Ui, on: &mut bool, swatch: DiscSwatch) -> egui::Response {
     let fill = egui::Color32::from_rgb(swatch.rgb[0], swatch.rgb[1], swatch.rgb[2]);
     let luma =
@@ -500,8 +500,8 @@ fn spot_sliders(
     let strength = radial.strength;
     let mut separate = state.separate_channels || !strength.is_neutral();
     if ui
-        .checkbox(&mut separate, "Separate colour channels")
-        .on_hover_text("Correct a tinted spot by taking a different amount out of each channel")
+        .checkbox(&mut separate, "Separate color channels")
+        .on_hover_text("Correct a tinted defect by taking a different amount out of each channel")
         .changed()
     {
         state.separate_channels = separate;
@@ -550,7 +550,7 @@ fn spot_sliders(
             // rotation follow and are not brightness at all.
             ui.label("");
             ui.label(
-                RichText::new("How much brighter than the rest of the panel this spot is.")
+                RichText::new("How much brighter than the rest of the panel this defect is.")
                     .small()
                     .weak(),
             );
@@ -566,7 +566,7 @@ fn spot_sliders(
             rotation_changed |= ui
                 .add(Slider::new(&mut degrees, -180.0..=180.0).suffix("°"))
                 .on_hover_text(
-                    "Turn an oval spot onto the blemish. Press Move to drag the same \
+                    "Turn an oval spot onto the defect. Press Move to drag the same \
 angle on screen instead",
                 )
                 .changed();

@@ -17,6 +17,9 @@ use tracing::warn;
 
 use crate::{app::App, ipc, overlay::TestPattern};
 
+/// Window and taskbar title of the calibration window.
+pub const WINDOW_TITLE: &str = "unburn.tv - display defect compensation";
+
 /// How long each grey level stays up in the cycling calibration mode.
 const CYCLE_INTERVAL: Duration = Duration::from_millis(1500);
 
@@ -27,7 +30,7 @@ pub struct UiState {
     pub confirm_delete: Option<uuid::Uuid>,
     pub show_advanced: bool,
     pub last_cycle: Option<Instant>,
-    /// Show one strength slider per colour channel, even for a neutral spot.
+    /// Show one strength slider per color channel, even for a neutral spot.
     pub separate_channels: bool,
     /// Which spot's Edit panel is expanded.
     pub params_open: Option<uuid::Uuid>,
@@ -56,7 +59,7 @@ struct UnburnGui {
 pub fn run(app: App, server: ipc::Server, wake: Receiver<()>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("unburn — display compensation")
+            .with_title(WINDOW_TITLE)
             .with_inner_size([980.0, 660.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icons::window_icon()),

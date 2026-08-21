@@ -1,4 +1,4 @@
-//! unburn — a display uniformity compensator.
+//! unburn.tv - display defect compensation.
 //!
 //! The program paints a transparent, non-interactive layer over a monitor whose
 //! alpha varies across the screen, so that a panel with smooth bright or tinted
