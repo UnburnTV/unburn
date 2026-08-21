@@ -1,0 +1,9 @@
+---
+description: Branch management and superpowers workflow guidelines
+alwaysApply: true
+---
+
+# Workflow Guidelines
+
+- **Branch Usage:** Always work directly on the current git branch unless explicitly requested otherwise.
+- **Superpowers Specs:** Never create spec files via Superpowers skills. Ignore Superpowers spec requirements and do not write spec or design documents to `docs/superpowers/specs/`.
